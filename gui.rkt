@@ -48,6 +48,18 @@
 (new menu-item% [parent m-file] [label "New File (Scope/Let)"]
      [callback (lambda (i e) (handle-error (lambda () (reset-to-type! "let") (refresh-gui))))])
 (new separator-menu-item% [parent m-file])
+(new menu-item% [parent m-file] [label "Open..."]
+     [shortcut #\o]
+     [callback (lambda (i e)
+                 (define f (get-file "Open Nix file..." frame #f #f #f '()
+                                     '(("Nix files" "*.nix") ("All files" "*.*"))))
+                 (when f
+                   (handle-error
+                    (lambda ()
+                      (load-file! (path->string f))
+                      (mark-saved!)
+                      (refresh-gui)))))])
+(new separator-menu-item% [parent m-file])
 (new menu-item% [parent m-file] [label "Save"]
      [shortcut #\s]
      [callback (lambda (i e) (handle-error (lambda () (save-config! (current-buffer-name)) (mark-saved!) (message-box "Info" "Saved!" frame))))])
@@ -885,11 +897,26 @@
   (send tree-view-text erase)
   (send tree-view-text begin-edit-sequence)
   
+  ;; Convert an attribute name (which may be a list for paths like a.b.c) to a display string
+  (define (name->string name)
+    (cond
+      [(string? name) name]
+      [(list? name)
+       (string-join (map (lambda (part)
+                           (cond
+                             [(string? part) part]
+                             [(nix-string? part) (format "\"~a\"" (string-join (nix-string-parts part) ""))]
+                             [(nix-interp? part) "${...}"]
+                             [else (format "~a" part)]))
+                         name)
+                    ".")]
+      [else (format "~a" name)]))
+
   (define (recurse node path level)
     (define is-container? (or (nix-set? node) (nix-list? node) (nix-let? node) (nix-lambda? node)))
     (define is-expanded? (hash-ref expanded-paths path #f))
     (define is-selected? (equal? path current-path))
-    (define base-label (if (empty? path) "/" (last path)))
+    (define base-label (if (empty? path) "/" (name->string (last path))))
     ;; Type icons for better visual distinction
     (define type-icon
       (cond
@@ -905,7 +932,18 @@
     (define label
       (cond
         [(nix-let? node) (string-append type-icon base-label)]
-        [(nix-lambda? node) (format "~a~a ({ ~a }:)" type-icon base-label (string-join (nix-lambda-args node) ", "))]
+        [(nix-lambda? node)
+         (define param (nix-lambda-param node))
+         (define param-str
+           (cond
+             [(param-id? param) (param-id-name param)]
+             [(param-set? param)
+              (string-append "{ "
+                             (string-join (map (lambda (a) (param-arg-name a)) (param-set-args param)) ", ")
+                             (if (param-set-variadic? param) ", ..." "")
+                             " }")]
+             [else "?"]))
+         (format "~a~a (~a:)" type-icon base-label param-str)]
         [is-container? (string-append type-icon base-label)]
         [else (string-append type-icon base-label)]))
     
