@@ -3,7 +3,6 @@
 (require "manager.rkt")
 (require "structs.rkt")
 (require "compiler.rkt")
-(require mrlib/hierlist)
 
 ;; =============================================================================
 ;; THEME HELPERS
@@ -138,35 +137,97 @@
 (define left-panel (new vertical-panel% [parent main-split] [min-width 250] [stretchable-width #f] [spacing 0] [border 0]))
 (new message% [parent left-panel] [label "Structure Tree"])
 
-;; Map to store item -> path association
-(define tree-items (make-hash))
-(define (tree-item-map-path! item path)
-  (hash-set! tree-items item path))
+(define tree-view-text (new text%))
+(define tree-view-canvas (new editor-canvas% 
+                              [parent left-panel] 
+                              [editor tree-view-text]
+                              [style '(no-hscroll)]
+                              [stretchable-width #t]
+                              [stretchable-height #t]))
+(setup-dark-editor tree-view-text tree-view-canvas)
 
-(define (get-path-for-item item)
-  (hash-ref tree-items item #f))
+;; Tree State
+(define expanded-paths (make-hash)) ;; path -> boolean
+(hash-set! expanded-paths '() #t)   ;; Always expand root
 
-;; Custom Tree Class to handle selection
-(define my-tree% 
-  (class hierarchical-list%
-    (super-new)
-    (define/override (on-select item)
-      (super on-select item)
-      (unless (is-refreshing?)
-        (define p (get-path-for-item item))
-        (when p
-          (handle-error 
-           (lambda ()
-             (let ([s (current-session)])
-               (current-session (struct-copy editor-state s [path p])))
-             (refresh-views-only))))))))
+(define (toggle-expand path)
+  (let ([curr (hash-ref expanded-paths path #f)])
+    (hash-set! expanded-paths path (not curr))
+    (refresh-views-only)))
 
-(define tree-view (new my-tree% 
-                       [parent left-panel]
-                       [style '(auto-vscroll auto-hscroll)]
-                       [stretchable-width #t]
-                       [stretchable-height #t]))
-(setup-dark-editor (send tree-view get-editor) tree-view)
+(define (select-path path)
+  (let ([s (current-session)])
+    (current-session (struct-copy editor-state s [path path])))
+  (refresh-views-only))
+
+(define (render-tree root current-path)
+  (send tree-view-text erase)
+  (send tree-view-text begin-edit-sequence)
+  
+  (define (recurse node path level)
+    (define is-container? (or (nix-set? node) (nix-list? node) (nix-let? node)))
+    (define is-expanded? (hash-ref expanded-paths path #f))
+    (define is-selected? (equal? path current-path))
+    (define label (if (empty? path) "/" (last path)))
+    
+    (if is-container?
+        (let* ([toggle-str (if is-expanded? "[-] " "[+] ")]
+               [start (send tree-view-text last-position)])
+          (send tree-view-text insert (make-string (* level 2) #\space))
+          
+          ;; Toggle
+          (let* ([toggle-start (send tree-view-text last-position)])
+            (send tree-view-text insert toggle-str)
+            (let ([toggle-end (send tree-view-text last-position)])
+              (send tree-view-text set-clickback toggle-start toggle-end (lambda (t s e) (toggle-expand path)))
+              
+              ;; Label
+              (let* ([label-start (send tree-view-text last-position)])
+                (send tree-view-text insert label)
+                (let ([label-end (send tree-view-text last-position)])
+                  (send tree-view-text set-clickback label-start label-end (lambda (t s e) (select-path path)))
+                  
+                  (send tree-view-text insert "\n")
+                  
+                  ;; Highlight Label
+                  (when is-selected?
+                    (define delta (new style-delta%))
+                    (send delta set-delta-background (make-object color% 60 60 90))
+                    (send delta set-delta-foreground "white")
+                    (send tree-view-text change-style delta label-start label-end))
+                  
+                  ;; Recurse children if expanded
+                  (when is-expanded?
+                    (match node
+                      [(struct nix-set (bindings))
+                       (for ([b bindings])
+                         (recurse (binding-value b) (append path (list (binding-name b))) (add1 level)))]
+                      [(struct nix-list (elems))
+                       (for ([e elems] [i (in-naturals)])
+                         (recurse e (append path (list (number->string i))) (add1 level)))]
+                      [(struct nix-let (bindings body))
+                       (recurse (nix-set bindings) (append path (list "bindings")) (add1 level))
+                       (recurse body (append path (list "body")) (add1 level))]
+                      [_ (void)])))))))
+        
+        ;; Leaf
+        (let* ([start (send tree-view-text last-position)])
+          (send tree-view-text insert (make-string (* level 2) #\space))
+          (let* ([label-start (send tree-view-text last-position)])
+            (send tree-view-text insert label)
+            (let ([label-end (send tree-view-text last-position)])
+              (send tree-view-text insert "\n")
+              
+              (send tree-view-text set-clickback label-start label-end (lambda (t s e) (select-path path)))
+              
+              (when is-selected?
+                (define delta (new style-delta%))
+                (send delta set-delta-background (make-object color% 60 60 90))
+                (send delta set-delta-foreground "white")
+                (send tree-view-text change-style delta label-start label-end)))))))
+
+  (recurse root '() 0)
+  (send tree-view-text end-edit-sequence))
 
 ;; --- RIGHT: EDITORS ---
 (define right-split (new vertical-panel% [parent main-split] [stretchable-width #t]))
@@ -397,58 +458,8 @@
   (send source-view-text erase)
   (send source-view-text insert (to-nix node))
   
-  ;; Update Tree Selection (Visual only)
-  ;; Walking the tree to find the item is hard because hierarchical-list doesn't expose a simple "find by data".
-  ;; We might have to rebuild or store references. Rebuilding is safest for now.
-  (rebuild-tree root path))
-
-(define (rebuild-tree root current-path)
-  (hash-clear! tree-items)
-  ;; Clear existing items? hierarchical-list doesn't seem to have 'clear'.
-  ;; We delete all children.
-  (for ([i (in-list (send tree-view get-items))])
-    (send tree-view delete-item i))
-
-  ;; Recursive builder
-  (define (build-node parent-item node node-path)
-    (define label 
-      (if (empty? node-path) "/" (last node-path)))
-    
-    (define is-container? (or (nix-set? node) (nix-list? node) (nix-let? node)))
-    
-    (define item 
-      (if parent-item
-          (if is-container? (send parent-item new-list) (send parent-item new-item))
-          (if is-container? (send tree-view new-list) (send tree-view new-item))))
-    
-    (define editor (send item get-editor))
-    (setup-dark-text editor)
-    (send editor insert (format "~a" label))
-    
-    ;; Highlight if selected
-    (when (equal? node-path current-path)
-      (send item select #t))
-    
-    ;; Set data for click handling
-    (tree-item-map-path! item node-path)
-    
-    (when is-container?
-      (send item open))
-    
-    ;; Recurse
-    (match node
-      [(struct nix-set (bindings))
-       (for ([b bindings])
-         (build-node item (binding-value b) (append node-path (list (binding-name b)))))]
-      [(struct nix-list (elems))
-       (for ([e elems] [i (in-naturals)])
-         (build-node item e (append node-path (list (number->string i)))))]
-      [(struct nix-let (bindings body))
-       (build-node item (nix-set bindings) (append node-path (list "bindings")))
-       (build-node item body (append node-path (list "body")))]
-      [else (void)]))
-  
-  (build-node #f root '()))
+  ;; Render Tree
+  (render-tree root path))
 
 (define (refresh-gui)
   (is-refreshing? #t)
