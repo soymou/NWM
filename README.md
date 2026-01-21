@@ -33,17 +33,15 @@ Once inside the environment, you can run the interpreter with full line-editing 
 
 ## Running the Application
 
-You can run the application directly using the compiled binary:
-
-```bash
-./interpreter
-```
-
-Alternatively, you can run it using the Racket source:
+To ensure full compatibility with the development environment (including arrow key support and autocompletion), run the application directly using the Racket source:
 
 ```bash
 racket interpreter.rkt
 ```
+
+> **Note:** Running the source inside the Nix environment (`nix develop` or `nix-shell`) is the recommended way to use this tool, as it correctly handles the `libedit` dependencies for line editing.
+
+## Development Environment (Nix)
 
 ## Usage
 

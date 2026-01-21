@@ -21,8 +21,7 @@
 
           shellHook = ''
             export LD_LIBRARY_PATH="${pkgs.libedit}/lib:${pkgs.ncurses}/lib:$LD_LIBRARY_PATH"
-            export LIBRARY_PATH="${pkgs.libedit}/lib:${pkgs.ncurses}/lib:$LIBRARY_PATH"
-            echo "Racket + Readline (via libedit) environment loaded."
+            echo "Nix Workspace Manager environment loaded."
           '';
         };
       }
