@@ -39,6 +39,28 @@
     (thunk)))
 
 ;; =============================================================================
+;; CUSTOM CONTROLS
+;; =============================================================================
+
+(define (handle-auto-update)
+  (define raw (send whole-source-text get-text))
+  (with-handlers ([exn:fail? (lambda (e) (void))]) ;; Silent during typing
+    (define val (parse-nix-structure raw))
+    (let ([s (current-session)])
+      (current-session (struct-copy editor-state s [root val])))
+    (refresh-views-only)))
+
+(define sync-text% 
+  (class text%
+    (super-new)
+    (define/augment (on-change)
+      (unless (is-refreshing?)
+        (handle-auto-update)))
+    (define/override (set-position start [end 'same] [scroll #t] [select #f])
+      (super set-position start end scroll select)
+      (unless (is-refreshing?)
+        (sync-path-from-pos start)))))
+;; =============================================================================
 ;; MAIN WINDOW
 ;; =============================================================================
 
@@ -55,6 +77,8 @@
      [callback (lambda (i e) (handle-error (lambda () (reset-to-type! "set") (refresh-gui))))])
 (new menu-item% [parent m-file] [label "New File (List)"]
      [callback (lambda (i e) (handle-error (lambda () (reset-to-type! "list") (refresh-gui))))])
+(new menu-item% [parent m-file] [label "New File (Scope/Let)"]
+     [callback (lambda (i e) (handle-error (lambda () (reset-to-type! "let") (refresh-gui))))])
 (new separator-menu-item% [parent m-file])
 (new menu-item% [parent m-file] [label "Save"]
      [callback (lambda (i e) (handle-error (lambda () (save-config! (current-buffer-name)) (message-box "Info" "Saved!" frame))))])
@@ -78,7 +102,7 @@
 (define m-templates (new menu% [parent m-edit] [label "Templates"]))
 (new menu-item% [parent m-templates] [label "Init Flake"]
      [callback (lambda (i e)
-                 (handle-error (lambda ()
+                 (handle-error (lambda () 
                                  (push-history!)
                                  (set-val! "inputs" (nix-set '()))
                                  (set-val! "outputs" (nix-set '()))
@@ -91,40 +115,141 @@
 
 (new menu-item% [parent m-templates] [label "Init Shell"]
      [callback (lambda (i e)
-                 (handle-error (lambda ()
+                 (handle-error (lambda () 
                                  (push-history!)
                                  (set-val! "buildInputs" (nix-list '()))
                                  (set-val! "shellHook" "echo 'Welcome'")
                                  (refresh-gui))))])
 
 ;; =============================================================================
-;; CUSTOM CONTROLS
+;; TOOLBAR & ACTIONS
 ;; =============================================================================
 
-(define dark-input-field%
-  (class editor-canvas%
-    (init callback [init-value ""])
-    (define notify-callback callback)
-    (super-new [style '(no-hscroll)] [min-height 25] [stretchable-height #f])
-    
-    (define text-editor 
-      (new (class text% 
-             (super-new)
-             (define/override (on-char event)
-               (define key (send event get-key-code))
-               (cond
-                 [(eq? key #\return) (notify-callback this event)]
-                 ;; Ignore newline insertion?
-                 [else (super on-char event)])))))
-    
-    (send this set-editor text-editor)
-    (setup-dark-editor text-editor this)
-    (send text-editor insert init-value)
-    
-    (define/public (get-value) (send text-editor get-text))
-    (define/public (set-value v) 
-      (send text-editor erase) 
-      (send text-editor insert v))))
+(define (add-child-handler type)
+  (handle-error
+   (lambda ()
+     (define s (current-session))
+     (define root (editor-state-root s))
+     (define path (editor-state-path s))
+     (define current-node (get-node root path))
+     
+     (define needs-key? (not (nix-list? current-node)))
+     (define key (if needs-key? (get-text-from-user "New Child" "Enter name:" frame) #f))
+     
+     (when (or (not needs-key?) (and key (non-empty-string? key)))
+       (define val
+         (match type
+           ["set" (nix-set '())]
+           ["list" (nix-list '())]
+           ["let" (nix-let '() (nix-set '()))]
+           ["value" 
+            (let ([v (get-text-from-user "New Value" "Enter value (e.g. \"str\", 1, true):" frame)])
+              (if v (parse-value v) #f))]))
+       
+       (when val
+         (push-history!)
+         (if (nix-list? current-node) (push! val) (set-val! key val))
+         (refresh-gui))))))
+
+(define (update-selected-handler)
+  (handle-error
+   (lambda ()
+     (define s (current-session))
+     (define path (editor-state-path s))
+     (when (empty? path) (error "Cannot update root"))
+     
+     (define parent-path (get-parent-path))
+     (define current-key (get-current-key))
+     (define parent-node (get-node (editor-state-root s) parent-path))
+     
+     (push-history!)
+     
+     ;; 1. Rename if in Set/Let
+     (when (or (nix-set? parent-node) (nix-let? parent-node))
+       (define new-key (get-text-from-user "Rename" "New name:" frame current-key))
+       (when (and new-key (not (equal? new-key current-key)) (non-empty-string? new-key))
+         (up!)
+         (rename-child! current-key new-key)
+         (enter! new-key)))
+     
+     ;; 2. Update Value if Scalar
+     (define node (get-node (editor-state-root (current-session)) (editor-state-path (current-session))))
+     (unless (or (nix-set? node) (nix-list? node) (nix-let? node))
+       (define v-str (to-nix node))
+       (define new-v (get-text-from-user "Update Value" "New value expression:" frame v-str))
+       (when new-v (set-val! (parse-value new-v))))
+     
+     (refresh-gui))))
+
+(define (comment-handler)
+  (handle-error
+   (lambda ()
+     (define v (get-text-from-user "Comment" "Enter comment text:" frame))
+     (when (and v (non-empty-string? v))
+       (push-history!)
+       (annotate! v)
+       (refresh-gui)))))
+
+(define (delete-selected-handler)
+  (handle-error
+   (lambda ()
+     (define path (editor-state-path (current-session)))
+     (when (empty? path) (error "Cannot delete root"))
+     (when (equal? (message-box "Confirm" "Delete selected node?" frame '(yes-no caution)) 'yes)
+       (push-history!)
+       (define key (get-current-key))
+       (up!)
+       (delete-child! key)
+       (refresh-gui)))))
+
+(define (wrap-in-scope-handler)
+  (handle-error
+   (lambda ()
+     (push-history!)
+     (let* ([s (current-session)]
+            [path (editor-state-path s)]
+            [node (get-node (editor-state-root s) path)])
+       (set-val! (nix-let '() node))
+       (refresh-gui)))))
+
+(define (unwrap-scope-handler)
+  (handle-error
+   (lambda ()
+     (let* ([s (current-session)]
+            [path (editor-state-path s)]
+            [node (get-node (editor-state-root s) path)])
+       (if (nix-let? node)
+           (begin
+             (push-history!)
+             (set-val! (nix-let-body node))
+             (refresh-gui))
+           (error "Selected node is not a scope (let) block"))))))
+
+(define toolbar-panel (new horizontal-panel% [parent frame] [stretchable-height #f] [min-height 40] [spacing 5] [border 5]))
+
+(new button% [parent toolbar-panel] [label "Top"] [callback (lambda (b e) (handle-error (lambda () (top!) (refresh-gui))))])
+(new button% [parent toolbar-panel] [label "Up"] [callback (lambda (b e) (handle-error (lambda () (up!) (refresh-gui))))])
+
+(new panel% [parent toolbar-panel] [min-width 10] [stretchable-width #f])
+
+(new button% [parent toolbar-panel] [label "Add..."]
+     [callback (lambda (b e)
+                 (define menu (new popup-menu%))
+                 (new menu-item% [parent menu] [label "Set"] [callback (lambda (i e) (add-child-handler "set"))])
+                 (new menu-item% [parent menu] [label "List"] [callback (lambda (i e) (add-child-handler "list"))])
+                 (new separator-menu-item% [parent menu])
+                 (new menu-item% [parent menu] [label "Value (Scalar)"] [callback (lambda (i e) (add-child-handler "value"))])
+                 (send b popup-menu menu 0 0))])
+
+(new button% [parent toolbar-panel] [label "Wrap Scope"] [callback (lambda (b e) (wrap-in-scope-handler))])
+(new button% [parent toolbar-panel] [label "Unwrap"] [callback (lambda (b e) (unwrap-scope-handler))])
+(new button% [parent toolbar-panel] [label "Update"] [callback (lambda (b e) (update-selected-handler))])
+(new button% [parent toolbar-panel] [label "Comment"] [callback (lambda (b e) (comment-handler))])
+(new button% [parent toolbar-panel] [label "Delete"] [callback (lambda (b e) (delete-selected-handler))])
+
+(new panel% [parent toolbar-panel] [min-width 10] [stretchable-width #f])
+
+(define path-msg (new message% [parent toolbar-panel] [label "/"] [auto-resize #t] [stretchable-width #t]))
 
 ;; =============================================================================
 ;; LAYOUT: SPLIT PANES
@@ -168,7 +293,8 @@
     (define is-container? (or (nix-set? node) (nix-list? node) (nix-let? node)))
     (define is-expanded? (hash-ref expanded-paths path #f))
     (define is-selected? (equal? path current-path))
-    (define label (if (empty? path) "/" (last path)))
+    (define base-label (if (empty? path) "/" (last path)))
+    (define label (if (nix-let? node) (string-append base-label " [let]") base-label))
     
     (if is-container?
         (let* ([toggle-str (if is-expanded? "[-] " "[+] ")]
@@ -235,13 +361,25 @@
 ;; 1. Whole Source (Syncing)
 (define top-right-group (new group-box-panel% [parent right-split] [label "Whole Source (Navigable)"] [stretchable-height #t]))
 
-(define sync-text% 
-  (class text%
-    (super-new)
-    (define/override (set-position start [end 'same] [scroll #t] [select #f])
-      (super set-position start end scroll select)
-      (unless (is-refreshing?)
-        (sync-path-from-pos start)))))
+;; Find the tightest node (smallest range) enclosing pos
+(define (sync-path-from-pos pos)
+  (define map-data (current-sourcemap))
+  (define best-match #f)
+  (define best-len 9999999)
+  
+  (for ([entry map-data])
+    (match-let ([(cons path (cons start end)) entry])
+      (when (and (>= pos start) (<= pos end))
+        (let ([len (- end start)])
+          (when (< len best-len)
+            (set! best-len len)
+            (set! best-match path))))))
+  
+  (when best-match
+    (unless (equal? best-match (editor-state-path (current-session)))
+      (let ([s (current-session)])
+        (current-session (struct-copy editor-state s [path best-match])))
+      (refresh-views-only))))
 
 (define whole-source-text (new sync-text%))
 (define whole-source-canvas (new editor-canvas% 
@@ -251,7 +389,7 @@
 (setup-dark-editor whole-source-text whole-source-canvas)
 
 ;; 2. Current Node Source
-(define bottom-right-group (new group-box-panel% [parent right-split] [label "Current Node Source"] [stretchable-height #f] [min-height 200]))
+(define bottom-right-group (new group-box-panel% [parent right-split] [label "Current Node Source (Read Only)"] [stretchable-height #f] [min-height 200]))
 
 (define source-view-text (new text%))
 (define source-view-canvas (new editor-canvas% 
@@ -259,14 +397,14 @@
                                 [editor source-view-text]
                                 [style '(no-hscroll)]))
 (setup-dark-editor source-view-text source-view-canvas)
+(send source-view-text lock #t)
 
 ;; =============================================================================
 ;; SIMPLE PARSER
 ;; =============================================================================
 
 (define (parse-nix-structure str)
-  (with-handlers ([exn:fail? (lambda (e) 
-                               (nix-var str))])
+  (with-handlers ([exn:fail? (lambda (e) (nix-var str))])
     (define tokens (regexp-match* #px"\\{|\\}|\\[|\\]|=|;|\\\"[^\\\"]*\\\"|[^\\s\\{\\}\\[\\]=;]+" str))
     
     (define (parse-expr toks)
@@ -274,8 +412,7 @@
         ['() (error "Unexpected EOF")]
         [(cons "{" rest) (parse-set rest)]
         [(cons "[" rest) (parse-list rest)]
-        [(cons t rest) 
-         (values (parse-value t) rest)]))
+        [(cons t rest) (values (parse-value t) rest)]))
     
     (define (parse-set toks)
       (let loop ([ts toks] [bindings '()])
@@ -300,165 +437,21 @@
     (let-values ([(res remaining) (parse-expr tokens)])
       (if (empty? remaining) res (nix-var str)))))
 
-(define (save-manual-edit)
-  (handle-error 
-   (lambda ()
-     (define raw (send source-view-text get-text))
-     (push-history!)
-     (define val (parse-nix-structure raw))
-     
-     ;; Check for fallback
-     (define proceed? #t)
-     (when (and (nix-var? val) (regexp-match? #px"^\\s*[\\{\\[]" raw))
-       (set! proceed? 
-             (equal? (message-box "Syntax Warning" 
-                                  "The structure could not be parsed (missing ';' or closing brace?).\nSave as raw text?" 
-                                  frame '(yes-no caution)) 
-                     'yes)))
-     
-     (when proceed?
-       (set-val! val)
-       (refresh-gui)))))
-
-(new button% [parent bottom-right-group] 
-     [label "Apply Manual Changes"]
-     [callback (lambda (b e) (save-manual-edit))])
-
-;; =============================================================================
-;; BOTTOM PANEL (CONTROLS)
-;; ...
-
-(define controls-panel (new vertical-panel% [parent frame] [stretchable-height #f]))
-
-;; --- ROW 1: CREATION ---
-(define row1 (new horizontal-panel% [parent controls-panel] [alignment '(left center)]))
-
-(define (add-child-handler type)
-  (handle-error
-   (lambda ()
-     (define s (current-session))
-     (define root (editor-state-root s))
-     (define path (editor-state-path s))
-     (define current-node (get-node root path))
-     
-     ;; Determine if we need a key
-     (define needs-key? 
-       (not (nix-list? current-node)))
-     
-     (define key
-       (if needs-key?
-           (get-text-from-user "New Child" "Enter name for new key:" frame)
-           #f))
-     
-     (when (or (not needs-key?) (and key (non-empty-string? key)))
-       (push-history!)
-       
-       (define val
-         (match type
-           ["set" (nix-set '())]
-           ["list" (nix-list '())]
-           ["let" (nix-let '() (nix-set '()))]
-           ["value" 
-            (let ([v (get-text-from-user "New Value" "Enter value (e.g. \"str\", 1, true):" frame)])
-              (if v (parse-value v) (error "Value cancelled")))]))
-       
-       (if (nix-list? current-node)
-           (push! val)
-           (set-val! key val))
-       
-       (refresh-gui)))))
-
-(new button% [parent row1] [label "Add Child..."]
-     [callback (lambda (b e)
-                 (define menu (new popup-menu%))
-                 (new menu-item% [parent menu] [label "Set"]
-                      [callback (lambda (i e) (add-child-handler "set"))])
-                 (new menu-item% [parent menu] [label "List"]
-                      [callback (lambda (i e) (add-child-handler "list"))])
-                 (new menu-item% [parent menu] [label "Scope (Let)"]
-                      [callback (lambda (i e) (add-child-handler "let"))])
-                 (new separator-menu-item% [parent menu])
-                 (new menu-item% [parent menu] [label "Value (Scalar)"]
-                      [callback (lambda (i e) (add-child-handler "value"))])
-                 (send b popup-menu menu 0 0))])
-
-;; --- ROW 2: EDITING ---
-(define row2 (new horizontal-panel% [parent controls-panel] [alignment '(left center)]))
-(new message% [parent row2] [label "Edit Value: "])
-
-(define (do-update-current)
-  (handle-error (lambda ()
-                  (define v-raw (send val-field get-value))
-                  (push-history!)
-                  (set-val! (parse-value v-raw))
-                  (refresh-gui))))
-
-(define val-field (new dark-input-field% 
-                       [parent row2]
-                       [init-value ""]
-                       [callback (lambda (c e) (do-update-current))]))
-
-(new button% [parent row2] [label "Update Current"]
-     [callback (lambda (b e) (do-update-current))])
-
-(new button% [parent row2] [label "Comment"]
-     [callback (lambda (b e)
-                 (handle-error (lambda ()
-                                 (define v-raw (send val-field get-value))
-                                 (unless (non-empty-string? v-raw) (error "Comment text required"))
-                                 (push-history!)
-                                 (annotate! v-raw)
-                                 (refresh-gui))))])
-
-(new button% [parent row2] [label "Delete Child..."]
-     [callback (lambda (b e)
-                 (handle-error (lambda ()
-                                 (define k (get-text-from-user "Delete" "Enter Key/Index to delete:" frame))
-                                 (when (and k (non-empty-string? k))
-                                   (push-history!)
-                                   (delete-child! k)
-                                   (refresh-gui)))))])
-
 ;; =============================================================================
 ;; LOGIC & SYNC
 ;; =============================================================================
 
-;; Find the tightest node (smallest range) enclosing pos
-(define (sync-path-from-pos pos)
-  (define map-data (current-sourcemap))
-  (define best-match #f)
-  (define best-len 9999999)
-  
-  (for ([entry map-data])
-    (match-let ([(cons path (cons start end)) entry])
-      (when (and (>= pos start) (<= pos end))
-        (let ([len (- end start)])
-          (when (< len best-len)
-            (set! best-len len)
-            (set! best-match path))))))
-  
-  (when best-match
-    ;; Update session path without triggering refresh loop?
-    ;; If we update session path, we should usually refresh GUI to update tree/node view
-    ;; But we don't want to re-set the whole source text cursor.
-    (unless (equal? best-match (editor-state-path (current-session)))
-      ;; Update path directly
-      (let ([s (current-session)])
-        (current-session (struct-copy editor-state s [path best-match])))
-      ;; Refresh only the views (not the whole source text)
-      (refresh-views-only))))
-
 (define (refresh-views-only)
-  ;; Update Current Node Source
   (define s (current-session))
   (define root (editor-state-root s))
   (define path (editor-state-path s))
-  
   (define node (get-node root path))
+  
+  (send source-view-text lock #f)
   (send source-view-text erase)
   (send source-view-text insert (to-nix node))
+  (send source-view-text lock #t)
   
-  ;; Render Tree
   (render-tree root path))
 
 (define (refresh-gui)

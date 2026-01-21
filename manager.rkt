@@ -113,6 +113,7 @@
   (match type
     ["set"  (current-session (editor-state (nix-set '()) '()))]
     ["list" (current-session (editor-state (nix-list '()) '()))]
+    ["let"  (current-session (editor-state (nix-let '() (nix-set '())) '()))]
     [else   (void)]))
 
 ;; --- 4. NAVIGATION & EDITING ---
@@ -168,6 +169,35 @@
 (define (top!)
   (let ([s (current-session)])
     (current-session (struct-copy editor-state s [path '()]))))
+
+(define (get-current-key)
+  (let ([p (editor-state-path (current-session))])
+    (if (empty? p) #f (last p))))
+
+(define (get-parent-path)
+  (let ([p (editor-state-path (current-session))])
+    (if (empty? p) #f (drop-right p 1))))
+
+(define (rename-child! old-key new-key)
+  (let ([s (current-session)])
+    (current-session 
+     (struct-copy editor-state s 
+                  [root (update-in (editor-state-root s) (editor-state-path s)
+                                   (lambda (n)
+                                     (match n
+                                       [(struct nix-set (bindings))
+                                        (nix-set (map (lambda (b) 
+                                                        (if (equal? (binding-name b) old-key)
+                                                            (binding new-key (binding-value b))
+                                                            b))
+                                                      bindings))]
+                                       [(struct nix-let (bindings body))
+                                        (nix-let (map (lambda (b) 
+                                                        (if (equal? (binding-name b) old-key)
+                                                            (binding new-key (binding-value b))
+                                                            b))
+                                                      bindings) body)]
+                                       [else (error "Focus is not a Set or Let bindings")])))]))))
 
 (define set-val!
   (case-lambda
