@@ -41,7 +41,7 @@ NIX_ENFORCE_NO_NATIVE='1'
 export NIX_ENFORCE_NO_NATIVE
 NIX_HARDENING_ENABLE='bindnow format fortify fortify3 libcxxhardeningextensive libcxxhardeningfast pic relro stackclashprotection stackprotector strictoverflow zerocallusedregs'
 export NIX_HARDENING_ENABLE
-NIX_LDFLAGS='-rpath /home/mou/Desktop/Personal/Programacion/Racket/Proyectos/NWM/outputs/out/lib  -L/nix/store/30bgppyai2z81yzvqq201s438s3hyxsz-racket-9.0/lib -L/nix/store/ddranxbikfg4jkf3n1m0a0h9qqxj1vf0-ncurses-6.5/lib -L/nix/store/xw2j3bn2ss92fwmr0ijz4jnyqd21xybc-libedit-20251016-3.1/lib -L/nix/store/30bgppyai2z81yzvqq201s438s3hyxsz-racket-9.0/lib -L/nix/store/ddranxbikfg4jkf3n1m0a0h9qqxj1vf0-ncurses-6.5/lib -L/nix/store/xw2j3bn2ss92fwmr0ijz4jnyqd21xybc-libedit-20251016-3.1/lib'
+NIX_LDFLAGS='-rpath /home/mou/Desktop/Personal/Programacion/Racket/Proyectos/Nix/NWM/outputs/out/lib  -L/nix/store/30bgppyai2z81yzvqq201s438s3hyxsz-racket-9.0/lib -L/nix/store/ddranxbikfg4jkf3n1m0a0h9qqxj1vf0-ncurses-6.5/lib -L/nix/store/xw2j3bn2ss92fwmr0ijz4jnyqd21xybc-libedit-20251016-3.1/lib -L/nix/store/30bgppyai2z81yzvqq201s438s3hyxsz-racket-9.0/lib -L/nix/store/ddranxbikfg4jkf3n1m0a0h9qqxj1vf0-ncurses-6.5/lib -L/nix/store/xw2j3bn2ss92fwmr0ijz4jnyqd21xybc-libedit-20251016-3.1/lib'
 export NIX_LDFLAGS
 NIX_NO_SELF_RPATH='1'
 NIX_STORE='/nix/store'
@@ -134,7 +134,7 @@ name='nix-shell-env'
 export name
 nativeBuildInputs=''
 export nativeBuildInputs
-out='/home/mou/Desktop/Personal/Programacion/Racket/Proyectos/NWM/outputs/out'
+out='/home/mou/Desktop/Personal/Programacion/Racket/Proyectos/Nix/NWM/outputs/out'
 export out
 outputBin='out'
 outputDev='out'
@@ -165,7 +165,7 @@ preConfigurePhases=' updateAutotoolsGnuConfigScriptsPhase'
 declare -a preFixupHooks=('_moveToShare' '_multioutDocs' '_multioutDevs' )
 preferLocalBuild='1'
 export preferLocalBuild
-prefix='/home/mou/Desktop/Personal/Programacion/Racket/Proyectos/NWM/outputs/out'
+prefix='/home/mou/Desktop/Personal/Programacion/Racket/Proyectos/Nix/NWM/outputs/out'
 declare -a propagatedBuildDepFiles=('propagated-build-build-deps' 'propagated-native-build-inputs' 'propagated-build-target-deps' )
 propagatedBuildInputs=''
 export propagatedBuildInputs
