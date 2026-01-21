@@ -155,6 +155,12 @@
            ["set" (nix-set '())]
            ["list" (nix-list '())]
            ["let" (nix-let '() (nix-set '()))]
+           ["lambda"
+            (let ([args-str (get-text-from-user "New Lambda" "Enter arguments (comma separated):" frame)])
+              (if args-str
+                  (let ([args (map string-trim (string-split args-str ","))])
+                    (nix-lambda args (nix-set '())))
+                  #f))]
            ["value" 
             (let ([v (get-text-from-user "New Value" "Enter value (e.g. \"str\", 1, true):" frame)])
               (if v (parse-value v) #f))]))
@@ -238,6 +244,19 @@
              (refresh-gui))
            (error "Selected node is not a scope (let) block"))))))
 
+(define (wrap-in-lambda-handler)
+  (handle-error
+   (lambda ()
+     (define args-str (get-text-from-user "Wrap in Lambda" "Enter arguments (comma separated):" frame))
+     (when args-str
+       (push-history!)
+       (let* ([s (current-session)]
+              [path (editor-state-path s)]
+              [node (get-node (editor-state-root s) path)]
+              [args (map string-trim (string-split args-str ","))])
+         (set-val! (nix-lambda args node))
+         (refresh-gui))))))
+
 (define toolbar-panel (new horizontal-panel% [parent frame] [stretchable-height #f] [min-height 40] [spacing 5] [border 5]))
 
 (new button% [parent toolbar-panel] [label "Top"] [callback (lambda (b e) (handle-error (lambda () (top!) (refresh-gui))))])
@@ -255,6 +274,7 @@
                  (send b popup-menu menu 0 0))])
 
 (new button% [parent toolbar-panel] [label "Wrap Scope"] [callback (lambda (b e) (wrap-in-scope-handler))])
+(new button% [parent toolbar-panel] [label "Wrap Lambda"] [callback (lambda (b e) (wrap-in-lambda-handler))])
 (new button% [parent toolbar-panel] [label "Unwrap"] [callback (lambda (b e) (unwrap-scope-handler))])
 (new button% [parent toolbar-panel] [label "Update"] [callback (lambda (b e) (update-selected-handler))])
 (new button% [parent toolbar-panel] [label "Comment"] [callback (lambda (b e) (comment-handler))])
@@ -303,11 +323,15 @@
   (send tree-view-text begin-edit-sequence)
   
   (define (recurse node path level)
-    (define is-container? (or (nix-set? node) (nix-list? node) (nix-let? node)))
+    (define is-container? (or (nix-set? node) (nix-list? node) (nix-let? node) (nix-lambda? node)))
     (define is-expanded? (hash-ref expanded-paths path #f))
     (define is-selected? (equal? path current-path))
     (define base-label (if (empty? path) "/" (last path)))
-    (define label (if (nix-let? node) (string-append base-label " [let]") base-label))
+    (define label 
+      (cond
+        [(nix-let? node) (string-append base-label " [let]")]
+        [(nix-lambda? node) (format "~a ({ ~a }:)" base-label (string-join (nix-lambda-args node) ", "))]
+        [else base-label]))
     
     (if is-container?
         (let* ([toggle-str (if is-expanded? "[-] " "[+] ")]
@@ -348,6 +372,8 @@
                        (begin
                          (recurse (nix-set bindings) (append path (list "bindings")) (add1 level))
                          (recurse body (append path (list "body")) (add1 level)))]
+                      [(struct nix-lambda (args body))
+                       (recurse body (append path (list "body")) (add1 level))]
                       [_ (void)])))))))
         
         ;; Leaf
@@ -418,17 +444,34 @@
 ;; =============================================================================
 
 (define (parse-nix-structure-strict str)
-  (define tokens (regexp-match* #px"\\{|\\}|\\[|\\]|=|;|\\\"[^\\\"]*\\\"|[^\\s\\{\\}\\[\\]=;]+" str))
+  (define tokens (regexp-match* #px"\\{|\\}|\\[|\\]|=|:|;|\\\"[^\\\"]*\\\"|[^\\s\\{\\}\\[\\]=:;]+" str))
   (when (empty? tokens) (error "Empty input"))
   
   (define (parse-expr toks)
     (match toks
       ['() (error "Unexpected EOF")]
-      [(cons "{" rest) (parse-set rest)]
+      [(cons "{" rest)
+       ;; Lookahead for Lambda or Set
+       (let ([maybe-lambda (regexp-match? #px"^\\s*[^:]+:" (string-join rest " "))])
+         (if (and (member ":" rest) maybe-lambda) ;; Very basic heuristic for lambda
+             (parse-lambda toks)
+             (parse-set rest)))]
       [(cons "[" rest) (parse-list rest)]
       [(cons "let" rest) (parse-let rest)]
       [(cons t rest) (values (parse-value t) rest)]))
   
+  (define (parse-lambda toks)
+    ;; toks starts with "{"
+    (let loop ([ts (rest toks)] [args '()])
+      (match ts
+        [(cons "}" (cons ":" rest))
+         (let-values ([(body after-body) (parse-expr rest)])
+           (values (nix-lambda (reverse args) body) after-body))]
+        [(cons "," rest) (loop rest args)]
+        [(cons "..." rest) (loop rest args)] ;; Ignore ellipsis for now
+        [(cons arg rest) (loop rest (cons arg args))]
+        [_ (error "Invalid lambda syntax")])))
+
   (define (parse-let toks)
     (let loop ([ts toks] [bindings '()])
       (match ts

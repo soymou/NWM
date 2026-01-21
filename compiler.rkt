@@ -72,7 +72,7 @@
 
     ;; 4. Lambdas
     [(struct nix-lambda (args body))
-     (let-values ([(body-str body-map) (to-nix-mapped body level path)])
+     (let-values ([(body-str body-map) (to-nix-mapped body level (append path '("body")))])
        (let* ([header (format "{ ~a, ... }:\n~a" (string-join args ", ") (indent level))]
               [full-str (string-append header body-str)]
               [shifted-map (shift-map body-map (string-length header))])

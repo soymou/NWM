@@ -49,6 +49,12 @@
           ["bindings" (get-node (nix-set bindings) rest)] ;; Treat as Set
           ["body"     (get-node body rest)]
           [else       (nix-var "<error: invalid-let-path>")])]
+       
+       ;; 4. Lambdas
+       [(struct nix-lambda (args body))
+        (match key
+          ["body" (get-node body rest)]
+          [else   (nix-var "<error: invalid-lambda-path>")])]
 
        [else (nix-var "<leaf>")])]))
 
@@ -60,6 +66,8 @@
      (build-list (length elems) number->string)]
     [(struct nix-let (bindings body))
      '("bindings" "body")]
+    [(struct nix-lambda (args body))
+     '("body")]
     [else '()]))
 
 ;; --- DATA STRUCTURES ---
@@ -152,6 +160,12 @@
           ["body"
            (nix-let bindings (update-in body rest f))]
           [else (error "Inside 'let', use 'cd bindings' or 'cd body'")])]
+       
+       ;; Lambdas
+       [(struct nix-lambda (args body))
+        (match key
+          ["body" (nix-lambda args (update-in body rest f))]
+          [else (error "Inside 'lambda', use 'cd body'")])]
 
        [else (error "Cannot traverse:" node)])]))
 
