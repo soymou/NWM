@@ -8,65 +8,12 @@
 ;; 1. HELPERS
 ;; =============================================================================
 
-(define (format-path path)
-  (if (empty? path) "/" (string-append "/" (string-join (map ~a path) "/"))))
-
 ;; --- ROBUST PARSER ---
 ;; Handles quotes correctly: set desc "my project" -> '("set" "desc" "\"my project\"")
 (define (parse-line line)
   (define tokens 
     (regexp-match* #px"[^\\s\"]+|\"[^\"]*\"" line))
   tokens)
-
-(define (strip-quotes s)
-  (if (and (string-prefix? s "\"") (string-suffix? s "\"") (> (string-length s) 1))
-      (substring s 1 (sub1 (string-length s)))
-      s))
-
-(define (parse-value s)
-  (cond
-    [(regexp-match? #px"^\".*\"$" s) (strip-quotes s)] ;; Explicit string
-    [(regexp-match? #px"^-?[0-9]+(\\.[0-9]+)?$" s) (string->number s)] ;; Number
-    [(equal? s "true") #t]
-    [(equal? s "false") #f]
-    [else (nix-var s)])) ;; Raw identifier/expression
-
-;; --- NODE TRAVERSAL ---
-(define (get-node root path)
-  (match path
-    ['() root]
-    [(cons key rest)
-     (match root
-       ;; 1. Sets
-       [(struct nix-set (bindings))
-        (let ([b (findf (lambda (x) (equal? (binding-name x) key)) bindings)])
-          (if b (get-node (binding-value b) rest) (nix-var "<error: key-not-found>")))]
-       
-       ;; 2. Lists
-       [(struct nix-list (elems))
-        (let ([idx (string->number key)])
-          (if (and (integer? idx) (< idx (length elems)) (>= idx 0))
-              (get-node (list-ref elems idx) rest)
-              (nix-var "<error: index-out-of-bounds>")))]
-       
-       ;; 3. Let Expressions (Virtual Directories)
-       [(struct nix-let (bindings body))
-        (match key
-          ["bindings" (get-node (nix-set bindings) rest)] ;; Treat as Set
-          ["body"     (get-node body rest)]
-          [else       (nix-var "<error: invalid-let-path>")])]
-
-       [else (nix-var "<leaf>")])]))
-
-(define (list-node-children node)
-  (match node
-    [(struct nix-set (bindings))
-     (map binding-name bindings)]
-    [(struct nix-list (elems))
-     (build-list (length elems) number->string)]
-    [(struct nix-let (bindings body))
-     '("bindings" "body")]
-    [else '()]))
 
 ;; =============================================================================
 ;; 2. EXECUTION ENGINE

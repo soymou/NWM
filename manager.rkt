@@ -5,6 +5,63 @@
 
 (provide (all-defined-out))
 
+;; =============================================================================
+;; SHARED HELPER FUNCTIONS (Moved from interpreter.rkt)
+;; =============================================================================
+
+(define (format-path path)
+  (if (empty? path) "/" (string-append "/" (string-join (map ~a path) "/"))))
+
+(define (strip-quotes s)
+  (if (and (string-prefix? s "\"") (string-suffix? s "\"") (> (string-length s) 1))
+      (substring s 1 (sub1 (string-length s)))
+      s))
+
+(define (parse-value s)
+  (cond
+    [(regexp-match? #px"^\".*\"$" s) (strip-quotes s)] ;; Explicit string
+    [(regexp-match? #px"^-?[0-9]+(\\.[0-9]+)?$" s) (string->number s)] ;; Number
+    [(equal? s "true") #t]
+    [(equal? s "false") #f]
+    [else (nix-var s)])) ;; Raw identifier/expression
+
+;; --- NODE TRAVERSAL ---
+(define (get-node root path)
+  (match path
+    ['() root]
+    [(cons key rest)
+     (match root
+       ;; 1. Sets
+       [(struct nix-set (bindings))
+        (let ([b (findf (lambda (x) (equal? (binding-name x) key)) bindings)])
+          (if b (get-node (binding-value b) rest) (nix-var "<error: key-not-found>")))]
+       
+       ;; 2. Lists
+       [(struct nix-list (elems))
+        (let ([idx (string->number key)])
+          (if (and (integer? idx) (< idx (length elems)) (>= idx 0))
+              (get-node (list-ref elems idx) rest)
+              (nix-var "<error: index-out-of-bounds>")))]
+       
+       ;; 3. Let Expressions (Virtual Directories)
+       [(struct nix-let (bindings body))
+        (match key
+          ["bindings" (get-node (nix-set bindings) rest)] ;; Treat as Set
+          ["body"     (get-node body rest)]
+          [else       (nix-var "<error: invalid-let-path>")])]
+
+       [else (nix-var "<leaf>")])]))
+
+(define (list-node-children node)
+  (match node
+    [(struct nix-set (bindings))
+     (map binding-name bindings)]
+    [(struct nix-list (elems))
+     (build-list (length elems) number->string)]
+    [(struct nix-let (bindings body))
+     '("bindings" "body")]
+    [else '()]))
+
 ;; --- DATA STRUCTURES ---
 (struct editor-state (root path) #:transparent)
 
@@ -139,8 +196,15 @@
                                           [(struct nix-set (bindings))
                                            (let ([clean (filter (lambda (b) (not (equal? (binding-name b) key))) bindings)])
                                              (nix-set (append clean (list (binding key val)))))]
+                                          [(struct nix-let (bindings body))
+                                           (cond
+                                             [(equal? key "body") (nix-let bindings val)]
+                                             [(equal? key "bindings") (error "Cannot overwrite bindings container")]
+                                             [else
+                                              (let ([clean (filter (lambda (b) (not (equal? (binding-name b) key))) bindings)])
+                                                (nix-let (append clean (list (binding key val))) body))])]
                                           [#f val]
-                                          [else (error "focus is not a set")])))])))]))
+                                          [else (error "focus is not a set or let")])))])))]))
 
 (define (push! val)
   (let ([s (current-session)])
@@ -175,4 +239,8 @@
                                           (if (and (integer? idx) (>= idx 0) (< idx (length elems)))
                                               (nix-list (append (take elems idx) (drop elems (add1 idx))))
                                               (error "Index out of bounds")))]
+                                       [(struct nix-let (bindings body))
+                                        (cond
+                                          [(member key '("bindings" "body")) (error "Cannot delete structural let elements")]
+                                          [else (nix-let (filter (lambda (b) (not (equal? (binding-name b) key))) bindings) body)])]
                                        [else (error "Current node cannot have children deleted")])))]))))
