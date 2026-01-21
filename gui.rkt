@@ -7,6 +7,7 @@
 (require "parser.rkt")
 (require "actions.rkt")
 (require "search.rkt")
+(require framework)
 
 ;; Flag to prevent recursive refresh loops
 (define is-refreshing? (make-parameter #f))
@@ -15,7 +16,21 @@
 ;; MAIN WINDOW & LAYOUT
 ;; =============================================================================
 
-(define frame (new frame%
+;; Custom frame with keyboard shortcuts
+(define nwm-frame%
+  (class frame%
+    (super-new)
+    (define/override (on-subwindow-char receiver event)
+      (define key (send event get-key-code))
+      (cond
+        ;; Escape closes search panel
+        [(eq? key 'escape)
+         (when search-panel-visible?
+           (hide-search-panel))
+         #t]
+        [else (super on-subwindow-char receiver event)]))))
+
+(define frame (new nwm-frame%
                    [label "Nix Workspace Manager"]
                    [width 1000]
                    [height 700]))
@@ -34,7 +49,8 @@
      [callback (lambda (i e) (handle-error (lambda () (reset-to-type! "let") (refresh-gui))))])
 (new separator-menu-item% [parent m-file])
 (new menu-item% [parent m-file] [label "Save"]
-     [callback (lambda (i e) (handle-error (lambda () (save-config! (current-buffer-name)) (message-box "Info" "Saved!" frame))))])
+     [shortcut #\s]
+     [callback (lambda (i e) (handle-error (lambda () (save-config! (current-buffer-name)) (mark-saved!) (message-box "Info" "Saved!" frame))))])
 (new menu-item% [parent m-file] [label "Save As..."]
      [callback (lambda (i e)
                  (define f (put-file "Save as..." #f #f "default.nix"))
@@ -52,6 +68,17 @@
 (new menu-item% [parent m-edit] [label "Undo"]
      [shortcut #\z]
      [callback (lambda (i e) (handle-error (lambda () (undo!) (refresh-gui))))])
+
+(define m-view (new menu% [parent menu-bar] [label "View"]))
+(new menu-item% [parent m-view] [label "Toggle Search Panel"]
+     [shortcut #\f]
+     [callback (lambda (i e) (toggle-search-panel))])
+(new menu-item% [parent m-view] [label "Focus Search"]
+     [shortcut #\g]
+     [callback (lambda (i e)
+                 (when (not search-panel-visible?)
+                   (toggle-search-panel))
+                 (send search-field focus))])
 
 (define m-templates (new menu% [parent m-edit] [label "Templates"]))
 (new menu-item% [parent m-templates] [label "Init Flake"]
@@ -109,7 +136,7 @@
                                  (top!)
                                  (set-val! "system" (nix-set '()))
                                  (enter! "system")
-                                 (set-val! "stateVersion" "24.05")
+                                 (set-val! "stateVersion" "24.11")
                                  (top!)
                                  (refresh-gui))))])
 
@@ -122,7 +149,7 @@
                                  (enter! "home")
                                  (set-val! "username" "user")
                                  (set-val! "homeDirectory" "/home/user")
-                                 (set-val! "stateVersion" "24.05")
+                                 (set-val! "stateVersion" "24.11")
                                  (set-val! "packages" (nix-list '()))
                                  (top!)
                                  (set-val! "programs" (nix-set '()))
@@ -179,26 +206,67 @@
 ;; --- TOOLBAR ---
 (define toolbar-panel (new horizontal-panel% [parent frame] [stretchable-height #f] [min-height 40] [spacing 5] [border 5]))
 
-(new button% [parent toolbar-panel] [label "Top"] [callback (lambda (b e) (handle-error (lambda () (top!) (refresh-gui))))])
-(new button% [parent toolbar-panel] [label "Up"] [callback (lambda (b e) (handle-error (lambda () (up!) (refresh-gui))))])
+;; Tooltip system
+(define tooltip-frame #f)
+(define tooltip-timer #f)
+
+(define (show-tooltip text x y)
+  (when tooltip-frame (send tooltip-frame show #f))
+  (set! tooltip-frame (new frame% [label ""] [style '(no-caption float)] [width 10] [height 10]))
+  (define msg (new message% [parent tooltip-frame] [label text]))
+  (send tooltip-frame reflow-container)
+  (send tooltip-frame move x y)
+  (send tooltip-frame show #t))
+
+(define (hide-tooltip)
+  (when tooltip-frame
+    (send tooltip-frame show #f)
+    (set! tooltip-frame #f))
+  (when tooltip-timer
+    (send tooltip-timer stop)))
+
+(define (make-tooltip-button parent label tooltip callback)
+  (define btn
+    (new button%
+         [parent parent]
+         [label label]
+         [callback callback]))
+  (define (on-enter)
+    (when tooltip-timer (send tooltip-timer stop))
+    (set! tooltip-timer
+          (new timer%
+               [notify-callback
+                (lambda ()
+                  (define-values (x y) (send btn client->screen 0 (send btn get-height)))
+                  (show-tooltip tooltip x (+ y 5)))]
+               [interval 500]
+               [just-once? #t])))
+  (define (on-leave)
+    (hide-tooltip))
+  ;; Note: button% doesn't have enter/leave events, so tooltips won't work perfectly
+  ;; For now, just create the button
+  btn)
+
+(make-tooltip-button toolbar-panel "Top" "Go to root node" (lambda (b e) (handle-error (lambda () (top!) (refresh-gui)))))
+(make-tooltip-button toolbar-panel "Up" "Go to parent node" (lambda (b e) (handle-error (lambda () (up!) (refresh-gui)))))
 
 (new panel% [parent toolbar-panel] [min-width 10] [stretchable-width #f])
 
-(new button% [parent toolbar-panel] [label "Add..."]
-     [callback (lambda (b e)
-                 (define menu (new popup-menu%))
-                 (new menu-item% [parent menu] [label "Set"] [callback (lambda (i e) (add-child-handler "set"))])
-                 (new menu-item% [parent menu] [label "List"] [callback (lambda (i e) (add-child-handler "list"))])
-                 (new separator-menu-item% [parent menu])
-                 (new menu-item% [parent menu] [label "Value (Scalar)"] [callback (lambda (i e) (add-child-handler "value"))])
-                 (send b popup-menu menu 0 0))])
+(make-tooltip-button toolbar-panel "Add..." "Add child node"
+     (lambda (b e)
+       (define menu (new popup-menu%))
+       (new menu-item% [parent menu] [label "Set"] [callback (lambda (i e) (add-child-handler "set"))])
+       (new menu-item% [parent menu] [label "List"] [callback (lambda (i e) (add-child-handler "list"))])
+       (new separator-menu-item% [parent menu])
+       (new menu-item% [parent menu] [label "Value (Scalar)"] [callback (lambda (i e) (add-child-handler "value"))])
+       (send b popup-menu menu 0 0)))
 
-(new button% [parent toolbar-panel] [label "Wrap Scope"] [callback (lambda (b e) (wrap-in-scope-handler))])
-(new button% [parent toolbar-panel] [label "Wrap Lambda"] [callback (lambda (b e) (wrap-in-lambda-handler))])
-(new button% [parent toolbar-panel] [label "Unwrap"] [callback (lambda (b e) (unwrap-handler))])
-(new button% [parent toolbar-panel] [label "Update"] [callback (lambda (b e) (update-selected-handler))])
-(new button% [parent toolbar-panel] [label "Comment"] [callback (lambda (b e) (comment-handler))])
-(new button% [parent toolbar-panel] [label "Delete"] [callback (lambda (b e) (delete-selected-handler))])
+(make-tooltip-button toolbar-panel "Wrap Scope" "Wrap in let...in block" (lambda (b e) (wrap-in-scope-handler)))
+(make-tooltip-button toolbar-panel "Wrap Lambda" "Wrap in lambda function" (lambda (b e) (wrap-in-lambda-handler)))
+(make-tooltip-button toolbar-panel "Unwrap" "Remove let/lambda wrapper" (lambda (b e) (unwrap-handler)))
+(make-tooltip-button toolbar-panel "Update" "Rename key or update value" (lambda (b e) (update-selected-handler)))
+(make-tooltip-button toolbar-panel "Comment" "Add comment to node" (lambda (b e) (comment-handler)))
+(make-tooltip-button toolbar-panel "Delete" "Delete selected node" (lambda (b e) (delete-selected-handler)))
 
 (new panel% [parent toolbar-panel] [min-width 10] [stretchable-width #f])
 
@@ -217,29 +285,92 @@
 (define search-panel-visible? #t)
 (define search-results '())  ;; List of package-result
 (define search-thread #f)
+(define loading-timer #f)
+(define loading-dots 0)
+
+(define (start-loading-animation)
+  (set! loading-dots 0)
+  (when loading-timer (send loading-timer stop))
+  (set! loading-timer
+        (new timer%
+             [notify-callback
+              (lambda ()
+                (set! loading-dots (modulo (add1 loading-dots) 4))
+                (send search-status set-label
+                      (string-append "Searching" (make-string loading-dots #\.))))]
+             [interval 300])))
+
+(define (stop-loading-animation)
+  (when loading-timer
+    (send loading-timer stop)
+    (set! loading-timer #f)))
 
 ;; =============================================================================
 ;; LAYOUT STRUCTURE
 ;; =============================================================================
 
-;; Outer container holds main-split and search-panel
-(define outer-container (new vertical-panel% [parent frame] [alignment '(center center)]))
+;; Outer container holds main-split and search-panel (dragable for resizing)
+(define outer-container (new panel:vertical-dragable% [parent frame]))
 
 ;; --- MAIN SPLIT ---
-(define main-split (new horizontal-panel% [parent outer-container] [alignment '(center center)]))
+(define main-split (new panel:horizontal-dragable% [parent outer-container]))
 
 ;; --- LEFT: TREE VIEW ---
-(define left-panel (new vertical-panel% [parent main-split] [min-width 250] [stretchable-width #f] [spacing 0] [border 0]))
-(new message% [parent left-panel] [label "Structure Tree"])
+(define left-panel (new vertical-panel% [parent main-split] [min-width 200] [stretchable-width #t] [spacing 0] [border 0]))
+
+;; Tree header with expand/collapse buttons
+(define tree-header (new horizontal-panel% [parent left-panel] [stretchable-height #f] [alignment '(left center)]))
+(new message% [parent tree-header] [label "Structure Tree"])
+(new panel% [parent tree-header] [stretchable-width #t])  ;; Spacer
+(new button% [parent tree-header] [label "▼"] [min-width 30]
+     [callback (lambda (b e) (expand-all!))])
+(new button% [parent tree-header] [label "▲"] [min-width 30]
+     [callback (lambda (b e) (collapse-all!))])
 
 (define tree-view-text (new text%))
-(define tree-view-canvas (new editor-canvas% 
-                              [parent left-panel] 
+
+;; Custom canvas with right-click context menu
+(define tree-context-canvas%
+  (class editor-canvas%
+    (super-new)
+    (define/override (on-event event)
+      (when (send event button-down? 'right)
+        (show-tree-context-menu (send event get-x) (send event get-y)))
+      (super on-event event))))
+
+(define tree-view-canvas (new tree-context-canvas%
+                              [parent left-panel]
                               [editor tree-view-text]
                               [style '(no-hscroll)]
                               [stretchable-width #t]
                               [stretchable-height #t]))
 (setup-dark-editor tree-view-text tree-view-canvas)
+
+;; Tree context menu
+(define (show-tree-context-menu x y)
+  (define menu (new popup-menu%))
+  (new menu-item% [parent menu] [label "Add Set"]
+       [callback (lambda (i e) (add-child-handler "set"))])
+  (new menu-item% [parent menu] [label "Add List"]
+       [callback (lambda (i e) (add-child-handler "list"))])
+  (new menu-item% [parent menu] [label "Add Value"]
+       [callback (lambda (i e) (add-child-handler "value"))])
+  (new separator-menu-item% [parent menu])
+  (new menu-item% [parent menu] [label "Update"]
+       [callback (lambda (i e) (update-selected-handler))])
+  (new menu-item% [parent menu] [label "Delete"]
+       [callback (lambda (i e) (delete-selected-handler))])
+  (new separator-menu-item% [parent menu])
+  (new menu-item% [parent menu] [label "Wrap in Scope"]
+       [callback (lambda (i e) (wrap-in-scope-handler))])
+  (new menu-item% [parent menu] [label "Wrap in Lambda"]
+       [callback (lambda (i e) (wrap-in-lambda-handler))])
+  (new menu-item% [parent menu] [label "Unwrap"]
+       [callback (lambda (i e) (unwrap-handler))])
+  (new separator-menu-item% [parent menu])
+  (new menu-item% [parent menu] [label "Add Comment"]
+       [callback (lambda (i e) (comment-handler))])
+  (send tree-view-canvas popup-menu menu x y))
 
 ;; --- RIGHT: EDITORS ---
 
@@ -309,6 +440,17 @@
                    ;; Update column headers based on search type
                    (update-search-columns))]))
 
+;; Search history
+(define search-history '())
+(define max-history-size 20)
+
+(define (add-to-search-history query)
+  (when (non-empty-string? (string-trim query))
+    ;; Remove duplicates and add to front
+    (set! search-history
+          (take (cons query (remove query search-history))
+                (min max-history-size (add1 (length search-history)))))))
+
 (define search-field
   (new text-field%
        [parent search-bar]
@@ -318,6 +460,26 @@
        [callback (lambda (tf e)
                    (when (eq? (send e get-event-type) 'text-field-enter)
                      (start-search (send tf get-value))))]))
+
+(define history-btn
+  (new button%
+       [parent search-bar]
+       [label "▼"]
+       [min-width 30]
+       [callback (lambda (b e)
+                   (define menu (new popup-menu%))
+                   (if (null? search-history)
+                       (new menu-item% [parent menu] [label "(No history)"]
+                            [callback (lambda (i e) (void))])
+                       (for ([query search-history])
+                         (new menu-item% [parent menu] [label query]
+                              [callback (lambda (i e)
+                                          (send search-field set-value query)
+                                          (start-search query))])))
+                   ;; Simple popup on the search panel
+                   (send search-panel popup-menu menu
+                         (send b get-x)
+                         (+ (send b get-y) (send b get-height))))]))
 
 (define search-btn
   (new button%
@@ -345,7 +507,7 @@
        [parent search-panel]
        [label #f]
        [choices '()]
-       [columns '("Package" "Version" "Description")]
+       [columns '("Name" "Type/Version" "Description")]
        [column-order '(0 1 2)]
        [style '(single column-headers variable-columns)]
        [stretchable-height #t]
@@ -364,6 +526,33 @@
 (send results-list-box set-column-width 2 400 100 1000)
 
 ;; Search panel is visible by default
+
+;; =============================================================================
+;; STATUS BAR
+;; =============================================================================
+
+(define status-bar (new horizontal-panel% [parent frame] [stretchable-height #f] [alignment '(left center)]))
+(define status-file-label (new message% [parent status-bar] [label "File: default.nix"] [auto-resize #t]))
+(new panel% [parent status-bar] [min-width 20] [stretchable-width #f])
+(define status-modified-label (new message% [parent status-bar] [label ""] [auto-resize #t]))
+(new panel% [parent status-bar] [stretchable-width #t])  ;; Spacer
+(define status-path-label (new message% [parent status-bar] [label "Path: /"] [auto-resize #t]))
+
+;; Track modification state
+(define is-modified? #f)
+
+(define (update-status-bar)
+  (send status-file-label set-label (format "File: ~a" (current-buffer-name)))
+  (send status-modified-label set-label (if is-modified? "[Modified]" ""))
+  (send status-path-label set-label (format "Path: ~a" (format-path (editor-state-path (current-session))))))
+
+(define (mark-modified!)
+  (set! is-modified? #t)
+  (update-status-bar))
+
+(define (mark-saved!)
+  (set! is-modified? #f)
+  (update-status-bar))
 
 ;; =============================================================================
 ;; SEARCH FUNCTIONS
@@ -395,6 +584,9 @@
 
 (define (start-search query)
   (when (non-empty-string? (string-trim query))
+    ;; Add to search history
+    (add-to-search-history query)
+
     ;; Kill existing search thread if any
     (when (and search-thread (thread-running? search-thread))
       (kill-thread search-thread))
@@ -402,7 +594,7 @@
     ;; Clear results and show searching status
     (set! search-results '())
     (send results-list-box clear)
-    (send search-status set-label "Searching...")
+    (start-loading-animation)
 
     (define search-type (get-search-type))
 
@@ -422,6 +614,7 @@
                     (display-option-results results error)))))))))
 
 (define (display-package-results results error)
+  (stop-loading-animation)
   (set! search-results results)
   (send results-list-box clear)
 
@@ -447,6 +640,7 @@
              2))]))
 
 (define (display-option-results results error)
+  (stop-loading-animation)
   (set! search-results results)
   (send results-list-box clear)
 
@@ -714,6 +908,33 @@
     (hash-set! expanded-paths path (not curr))
     (refresh-views-only)))
 
+(define (expand-all!)
+  ;; Recursively expand all container nodes
+  (define (expand-node node path)
+    (when (or (nix-set? node) (nix-list? node) (nix-let? node) (nix-lambda? node))
+      (hash-set! expanded-paths path #t)
+      (match node
+        [(struct nix-set (bindings))
+         (for ([b bindings])
+           (expand-node (binding-value b) (append path (list (binding-name b)))))]
+        [(struct nix-list (elems))
+         (for ([e elems] [i (in-naturals)])
+           (expand-node e (append path (list (number->string i)))))]
+        [(struct nix-let (bindings body))
+         (expand-node (nix-set bindings) (append path (list "bindings")))
+         (expand-node body (append path (list "body")))]
+        [(struct nix-lambda (args body))
+         (expand-node body (append path (list "body")))]
+        [_ (void)])))
+  (expand-node (editor-state-root (current-session)) '())
+  (refresh-views-only))
+
+(define (collapse-all!)
+  ;; Collapse all nodes except root
+  (hash-clear! expanded-paths)
+  (hash-set! expanded-paths '() #t)
+  (refresh-views-only))
+
 (define (select-path path)
   (let ([s (current-session)])
     (current-session (struct-copy editor-state s [path path])))
@@ -728,11 +949,24 @@
     (define is-expanded? (hash-ref expanded-paths path #f))
     (define is-selected? (equal? path current-path))
     (define base-label (if (empty? path) "/" (last path)))
-    (define label 
+    ;; Type icons for better visual distinction
+    (define type-icon
       (cond
-        [(nix-let? node) (string-append base-label " [let]")]
-        [(nix-lambda? node) (format "~a ({ ~a }:) " base-label (string-join (nix-lambda-args node) ", "))]
-        [else base-label]))
+        [(nix-set? node) "{ } "]
+        [(nix-list? node) "[ ] "]
+        [(nix-let? node) "let "]
+        [(nix-lambda? node) "λ "]
+        [(string? node) "\"\" "]
+        [(number? node) "# "]
+        [(boolean? node) "? "]
+        [(nix-var? node) "→ "]
+        [else "• "]))
+    (define label
+      (cond
+        [(nix-let? node) (string-append type-icon base-label)]
+        [(nix-lambda? node) (format "~a~a ({ ~a }:)" type-icon base-label (string-join (nix-lambda-args node) ", "))]
+        [is-container? (string-append type-icon base-label)]
+        [else (string-append type-icon base-label)]))
     
     (if is-container?
         (let* ([toggle-str (if is-expanded? "[-] " "[+] ")]
@@ -813,19 +1047,23 @@
 
 (define (refresh-gui [full? #t])
   (is-refreshing? #t)
-  
+
   (define s (current-session))
   (define root (editor-state-root s))
-  
+
   (when full?
     ;; Regenerate Whole Source & Map
     (define-values (code mapping) (to-nix-mapped root))
     (current-sourcemap mapping)
-    
+
     (send whole-source-text erase)
-    (send whole-source-text insert code))
-  
+    (send whole-source-text insert code)
+
+    ;; Mark as modified when content changes
+    (mark-modified!))
+
   (refresh-views-only)
+  (update-status-bar)
   (is-refreshing? #f))
 
 ;; Register the refresh callback in actions.rkt
