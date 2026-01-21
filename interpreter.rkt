@@ -142,15 +142,19 @@
        (printf "+ Let Block at: ~a\n" key))]
 
     ;; --- VALUE EDITING ---
-    [(list "set" raw-key raw-val)
+    [(list "set" raw-key raw-vals ...)
      (let ([key (strip-quotes raw-key)]
-           [val (parse-value raw-val)])
+           [val (if (= (length raw-vals) 1)
+                    (parse-value (first raw-vals))
+                    (string-join (map strip-quotes raw-vals) " "))])
        (push-history!)
        (set-val! key val)
        (printf "✓ ~a = ~a\n" key (if (string? val) (format "\"~a\"" val) val)))]
 
-    [(list "push" raw-val)
-     (let ([val (parse-value raw-val)])
+    [(list "push" raw-vals ...)
+     (let ([val (if (= (length raw-vals) 1)
+                    (parse-value (first raw-vals))
+                    (string-join (map strip-quotes raw-vals) " "))])
        (push-history!)
        (push! val)
        (printf "✓ Pushed: ~a\n" (if (string? val) (format "\"~a\"" val) val)))]
@@ -176,13 +180,13 @@
      (execute '("cd" "inputs"))
      (execute '("mkset" "nixpkgs"))
      (execute '("cd" "nixpkgs"))
-     (execute '("set" "url" "github:nixos/nixpkgs/nixos-unstable"))
+     (execute '("set" "url" "\"github:nixos/nixpkgs/nixos-unstable\""))
      (execute '("top"))]
 
     [(list "init" "shell")
      (push-history!)
      (execute '("mklist" "buildInputs"))
-     (execute '("set" "shellHook" "echo 'Welcome'"))]
+     (execute '("set" "shellHook" "\"echo 'Welcome'\""))]
 
     ;; --- SYSTEM & VIEWING ---
     [(list "ls")
