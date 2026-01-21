@@ -22,9 +22,8 @@
     [(struct binding (name val))
      (let-values ([(v-str v-map) (to-nix-mapped val level path)])
        (let* ([s1 (format "~a = " name)]
-              [full-str (string-append s1 v-str ";")]
-              [shifted-v-map (shift-map v-map (string-length s1))])
-         (values full-str shifted-v-map)))]
+              [full-str (string-append s1 v-str ";")])
+         (values full-str v-map)))]
 
     ;; 2. Sets
     [(struct nix-set (bindings))
@@ -39,7 +38,7 @@
                                   [child-path (append path (list key))]
                                   [indent-str (indent child-lvl)])
                              (let-values ([(b-str b-map) (to-nix-mapped val child-lvl child-path)])
-                               (let* ([sep (if (is-let? val) (format " =\n~a" (indent child-lvl)) " = ")]
+                               (let* ([sep (if (is-let? val) (format " =\n~a" (indent (add1 child-lvl))) " = ")]
                                       [line (format "~a~a~a~a;\n" indent-str key sep b-str)]
                                       [prefix-len (+ (string-length indent-str) (string-length key) (string-length sep))]
                                       [shifted-b-map (shift-map b-map (+ (string-length acc-str) prefix-len))])
@@ -119,7 +118,7 @@
                               [child-path (append path (list "bindings" key))]
                               [indent-str (indent (add1 level))])
                          (let-values ([(b-str b-map) (to-nix-mapped val (add1 level) child-path)])
-                           (let* ([sep (if (is-let? val) (format " =\n~a" (indent (add1 level))) " = ")]
+                           (let* ([sep (if (is-let? val) (format " =\n~a" (indent (+ 2 level))) " = ")]
                                   [line (format "~a~a~a~a;\n" indent-str key sep b-str)]
                                   [prefix-len (+ (string-length indent-str) (string-length key) (string-length sep))]
                                   [shifted-b-map (shift-map b-map (+ (string-length acc-str) prefix-len))])
@@ -142,7 +141,7 @@
     ;; 1. Bindings
     [(struct binding (name val))
      (if (nix-let? val)
-         (format "~a =\n~a~a;" name (indent level) (to-nix val level))
+         (format "~a =\n~a~a;" name (indent (add1 level)) (to-nix val (add1 level)))
          (format "~a = ~a;" name (to-nix val level)))]
 
     ;; 2. Sets
@@ -167,7 +166,7 @@
 
     ;; 4. Lambdas
     [(struct nix-lambda (args body))
-     (format "{ ~a, ... }: \n~a~a"
+     (format "{ ~a, ... }:\n~a~a"
              (string-join args ", ")
              (indent level)
              (to-nix body level))]

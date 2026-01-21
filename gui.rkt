@@ -44,18 +44,30 @@
 
 (define (handle-auto-update)
   (define raw (send whole-source-text get-text))
-  (with-handlers ([exn:fail? (lambda (e) (void))]) ;; Silent during typing
-    (define val (parse-nix-structure raw))
+  (with-handlers ([exn:fail? (lambda (e) (void))]) ;; Silent: retain last tree on syntax error
+    (define val (parse-nix-structure-strict raw))
     (let ([s (current-session)])
       (current-session (struct-copy editor-state s [root val])))
+    ;; Regenerate map for cursor sync
+    (define-values (code mapping) (to-nix-mapped (editor-state-root (current-session))))
+    (current-sourcemap mapping)
     (refresh-views-only)))
 
-(define sync-text% 
+(define sync-text%
   (class text%
     (super-new)
     (define/augment (on-change)
       (unless (is-refreshing?)
         (handle-auto-update)))
+    (define/override (on-event event)
+      (super on-event event)
+      (when (send event button-down? 'left)
+        (sync-path-from-pos (send this get-start-position))))
+    (define/override (on-char event)
+      (super on-char event)
+      (define key (send event get-key-code))
+      (when (member key '(left right up down))
+        (sync-path-from-pos (send this get-start-position))))
     (define/override (set-position start [end 'same] [scroll #t] [select #f])
       (super set-position start end scroll select)
       (unless (is-refreshing?)
@@ -89,7 +101,8 @@
                    (handle-error (lambda ()
                                    (save-config! (path->string f))
                                    (switch-buffer! (path->string f))
-                                   (refresh-gui)))))])
+                                   (refresh-gui)))))
+                 ])
 (new separator-menu-item% [parent m-file])
 (new menu-item% [parent m-file] [label "Exit"]
      [callback (lambda (i e) (send frame show #f))])
@@ -332,8 +345,9 @@
                        (for ([e elems] [i (in-naturals)])
                          (recurse e (append path (list (number->string i))) (add1 level)))]
                       [(struct nix-let (bindings body))
-                       (recurse (nix-set bindings) (append path (list "bindings")) (add1 level))
-                       (recurse body (append path (list "body")) (add1 level))]
+                       (begin
+                         (recurse (nix-set bindings) (append path (list "bindings")) (add1 level))
+                         (recurse body (append path (list "body")) (add1 level)))]
                       [_ (void)])))))))
         
         ;; Leaf
@@ -403,39 +417,58 @@
 ;; SIMPLE PARSER
 ;; =============================================================================
 
+(define (parse-nix-structure-strict str)
+  (define tokens (regexp-match* #px"\\{|\\}|\\[|\\]|=|;|\\\"[^\\\"]*\\\"|[^\\s\\{\\}\\[\\]=;]+" str))
+  (when (empty? tokens) (error "Empty input"))
+  
+  (define (parse-expr toks)
+    (match toks
+      ['() (error "Unexpected EOF")]
+      [(cons "{" rest) (parse-set rest)]
+      [(cons "[" rest) (parse-list rest)]
+      [(cons "let" rest) (parse-let rest)]
+      [(cons t rest) (values (parse-value t) rest)]))
+  
+  (define (parse-let toks)
+    (let loop ([ts toks] [bindings '()])
+      (match ts
+        [(cons "in" rest)
+         (let-values ([(body after-body) (parse-expr rest)])
+           (values (nix-let (reverse bindings) body) after-body))]
+        [(cons key (cons "=" rest))
+         (let-values ([(val after-val) (parse-expr rest)])
+           (match after-val
+             [(cons ";" after-semi)
+              (loop after-semi (cons (binding (strip-quotes key) val) bindings))]
+             [_ (error "Expected ';' after let binding")]))]
+        [_ (error "Invalid let syntax")])))
+
+  (define (parse-set toks)
+    (let loop ([ts toks] [bindings '()])
+      (match ts
+        [(cons "}" rest) (values (nix-set (reverse bindings)) rest)]
+        [(cons key (cons "=" rest))
+         (let-values ([(val after-val) (parse-expr rest)])
+           (match after-val
+             [(cons ";" after-semi)
+              (loop after-semi (cons (binding (strip-quotes key) val) bindings))]
+             [_ (error "Expected ';' after binding")]))]
+        [_ (error "Invalid set syntax")])))
+  
+  (define (parse-list toks)
+    (let loop ([ts toks] [elems '()])
+      (match ts
+        [(cons "]" rest) (values (nix-list (reverse elems)) rest)]
+        [_ 
+         (let-values ([(val after-val) (parse-expr ts)])
+           (loop after-val (cons val elems)))])))
+  
+  (let-values ([(res remaining) (parse-expr tokens)])
+    (if (empty? remaining) res (error "Trailing garbage"))))
+
 (define (parse-nix-structure str)
   (with-handlers ([exn:fail? (lambda (e) (nix-var str))])
-    (define tokens (regexp-match* #px"\\{|\\}|\\[|\\]|=|;|\\\"[^\\\"]*\\\"|[^\\s\\{\\}\\[\\]=;]+" str))
-    
-    (define (parse-expr toks)
-      (match toks
-        ['() (error "Unexpected EOF")]
-        [(cons "{" rest) (parse-set rest)]
-        [(cons "[" rest) (parse-list rest)]
-        [(cons t rest) (values (parse-value t) rest)]))
-    
-    (define (parse-set toks)
-      (let loop ([ts toks] [bindings '()])
-        (match ts
-          [(cons "}" rest) (values (nix-set (reverse bindings)) rest)]
-          [(cons key (cons "=" rest))
-           (let-values ([(val after-val) (parse-expr rest)])
-             (match after-val
-               [(cons ";" after-semi)
-                (loop after-semi (cons (binding (strip-quotes key) val) bindings))]
-               [_ (error "Expected ';' after binding")]))]
-          [_ (error "Invalid set syntax")])))
-    
-    (define (parse-list toks)
-      (let loop ([ts toks] [elems '()])
-        (match ts
-          [(cons "]" rest) (values (nix-list (reverse elems)) rest)]
-          [_ 
-           (let-values ([(val after-val) (parse-expr ts)])
-             (loop after-val (cons val elems)))])))
-    
-    (let-values ([(res remaining) (parse-expr tokens)])
-      (if (empty? remaining) res (nix-var str)))))
+    (parse-nix-structure-strict str)))
 
 ;; =============================================================================
 ;; LOGIC & SYNC
