@@ -13,18 +13,19 @@ The **Nix Workspace Manager** is a GUI tool built in Racket designed to interact
 
 The Nix Editor provides a comprehensive environment for managing Nix expressions:
 
-*   **Action Toolbar**: A centralized command center for structural manipulations:
-    *   **Add Child**: Unified menu to add new Sets, Lists, or Scalar values.
-    *   **Update**: Rename keys or modify values via simple dialog popups.
-    *   **Wrap/Unwrap Scope**: Easily encapsulate logic in `let ... in` blocks or strip them away.
-    *   **Wrap Lambda**: Wrap any expression in a function `{ args }:`.
-    *   **Comment & Delete**: Metadata management and safe node removal.
-*   **Structure Tree (Left Pane)**: A text-based interactive tree view.
-    *   Visualizes the hierarchy of the Nix configuration.
-    *   Right click nodes to see available actions.
-    *   Supports folding/unfolding of containers.
-    *   Synchronizes instantly with the code editors.
-*   **Whole Source View (Right Top)**: A full-featured dark-mode code editor.
+*   **Action Toolbar**: A streamlined command center for global actions:
+    *   **Undo**: Quickly revert the last change.
+    *   **Path Display**: Shows the currently selected node's path.
+    *   **Search Toggle**: Show or hide the advanced search panel.
+*   **Structure Tree (Left Pane)**: A text-based interactive tree view with a powerful context menu.
+    *   **Context Menu (Right-Click)**: Access structural manipulations directly on nodes:
+        *   **Add Child**: Add new Sets, Lists, or Scalar values.
+        *   **Update**: Rename keys or modify values.
+        *   **Wrap/Unwrap Scope**: Manage `let ... in` blocks.
+        *   **Wrap Lambda**: Wrap expressions in functions.
+        *   **Comment & Delete**: Metadata management and node removal.
+    *   Visualizes the hierarchy and supports folding/unfolding.
+    *   Synchronizes instantly with the code editors.*   **Whole Source View (Right Top)**: A full-featured dark-mode code editor.
     *   Displays the complete compiled Nix file.
     *   Supports manual editing with automatic background parsing and tree updates.
     *   Real-time synchronization: clicking or moving the cursor in the code automatically selects the corresponding node in the tree.

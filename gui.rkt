@@ -206,67 +206,8 @@
 ;; --- TOOLBAR ---
 (define toolbar-panel (new horizontal-panel% [parent frame] [stretchable-height #f] [min-height 40] [spacing 5] [border 5]))
 
-;; Tooltip system
-(define tooltip-frame #f)
-(define tooltip-timer #f)
-
-(define (show-tooltip text x y)
-  (when tooltip-frame (send tooltip-frame show #f))
-  (set! tooltip-frame (new frame% [label ""] [style '(no-caption float)] [width 10] [height 10]))
-  (define msg (new message% [parent tooltip-frame] [label text]))
-  (send tooltip-frame reflow-container)
-  (send tooltip-frame move x y)
-  (send tooltip-frame show #t))
-
-(define (hide-tooltip)
-  (when tooltip-frame
-    (send tooltip-frame show #f)
-    (set! tooltip-frame #f))
-  (when tooltip-timer
-    (send tooltip-timer stop)))
-
-(define (make-tooltip-button parent label tooltip callback)
-  (define btn
-    (new button%
-         [parent parent]
-         [label label]
-         [callback callback]))
-  (define (on-enter)
-    (when tooltip-timer (send tooltip-timer stop))
-    (set! tooltip-timer
-          (new timer%
-               [notify-callback
-                (lambda ()
-                  (define-values (x y) (send btn client->screen 0 (send btn get-height)))
-                  (show-tooltip tooltip x (+ y 5)))]
-               [interval 500]
-               [just-once? #t])))
-  (define (on-leave)
-    (hide-tooltip))
-  ;; Note: button% doesn't have enter/leave events, so tooltips won't work perfectly
-  ;; For now, just create the button
-  btn)
-
-(make-tooltip-button toolbar-panel "Top" "Go to root node" (lambda (b e) (handle-error (lambda () (top!) (refresh-gui)))))
-(make-tooltip-button toolbar-panel "Up" "Go to parent node" (lambda (b e) (handle-error (lambda () (up!) (refresh-gui)))))
-
-(new panel% [parent toolbar-panel] [min-width 10] [stretchable-width #f])
-
-(make-tooltip-button toolbar-panel "Add..." "Add child node"
-     (lambda (b e)
-       (define menu (new popup-menu%))
-       (new menu-item% [parent menu] [label "Set"] [callback (lambda (i e) (add-child-handler "set"))])
-       (new menu-item% [parent menu] [label "List"] [callback (lambda (i e) (add-child-handler "list"))])
-       (new separator-menu-item% [parent menu])
-       (new menu-item% [parent menu] [label "Value (Scalar)"] [callback (lambda (i e) (add-child-handler "value"))])
-       (send b popup-menu menu 0 0)))
-
-(make-tooltip-button toolbar-panel "Wrap Scope" "Wrap in let...in block" (lambda (b e) (wrap-in-scope-handler)))
-(make-tooltip-button toolbar-panel "Wrap Lambda" "Wrap in lambda function" (lambda (b e) (wrap-in-lambda-handler)))
-(make-tooltip-button toolbar-panel "Unwrap" "Remove let/lambda wrapper" (lambda (b e) (unwrap-handler)))
-(make-tooltip-button toolbar-panel "Update" "Rename key or update value" (lambda (b e) (update-selected-handler)))
-(make-tooltip-button toolbar-panel "Comment" "Add comment to node" (lambda (b e) (comment-handler)))
-(make-tooltip-button toolbar-panel "Delete" "Delete selected node" (lambda (b e) (delete-selected-handler)))
+(new button% [parent toolbar-panel] [label "Undo"]
+     [callback (lambda (b e) (handle-error (lambda () (undo!) (refresh-gui))))])
 
 (new panel% [parent toolbar-panel] [min-width 10] [stretchable-width #f])
 
