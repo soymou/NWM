@@ -69,10 +69,111 @@
 
 (new menu-item% [parent m-templates] [label "Init Shell"]
      [callback (lambda (i e)
-                 (handle-error (lambda () 
+                 (handle-error (lambda ()
                                  (push-history!)
                                  (set-val! "buildInputs" (nix-list '()))
                                  (set-val! "shellHook" "echo 'Welcome'")
+                                 (refresh-gui))))])
+
+(new separator-menu-item% [parent m-templates])
+
+(new menu-item% [parent m-templates] [label "NixOS Configuration"]
+     [callback (lambda (i e)
+                 (handle-error (lambda ()
+                                 (push-history!)
+                                 (reset-to-type! "set")
+                                 (set-val! "imports" (nix-list '()))
+                                 (set-val! "boot" (nix-set '()))
+                                 (enter! "boot")
+                                 (set-val! "loader" (nix-set '()))
+                                 (enter! "loader")
+                                 (set-val! "systemd-boot" (nix-set '()))
+                                 (enter! "systemd-boot")
+                                 (set-val! "enable" #t)
+                                 (top!)
+                                 (set-val! "networking" (nix-set '()))
+                                 (enter! "networking")
+                                 (set-val! "hostName" "nixos")
+                                 (top!)
+                                 (set-val! "time" (nix-set '()))
+                                 (enter! "time")
+                                 (set-val! "timeZone" "UTC")
+                                 (top!)
+                                 (set-val! "users" (nix-set '()))
+                                 (enter! "users")
+                                 (set-val! "users" (nix-set '()))
+                                 (top!)
+                                 (set-val! "environment" (nix-set '()))
+                                 (enter! "environment")
+                                 (set-val! "systemPackages" (nix-list '()))
+                                 (top!)
+                                 (set-val! "system" (nix-set '()))
+                                 (enter! "system")
+                                 (set-val! "stateVersion" "24.05")
+                                 (top!)
+                                 (refresh-gui))))])
+
+(new menu-item% [parent m-templates] [label "Home Manager Configuration"]
+     [callback (lambda (i e)
+                 (handle-error (lambda ()
+                                 (push-history!)
+                                 (reset-to-type! "set")
+                                 (set-val! "home" (nix-set '()))
+                                 (enter! "home")
+                                 (set-val! "username" "user")
+                                 (set-val! "homeDirectory" "/home/user")
+                                 (set-val! "stateVersion" "24.05")
+                                 (set-val! "packages" (nix-list '()))
+                                 (top!)
+                                 (set-val! "programs" (nix-set '()))
+                                 (set-val! "services" (nix-set '()))
+                                 (refresh-gui))))])
+
+(new menu-item% [parent m-templates] [label "Flake with DevShell"]
+     [callback (lambda (i e)
+                 (handle-error (lambda ()
+                                 (push-history!)
+                                 (reset-to-type! "set")
+                                 (set-val! "description" "Development environment")
+                                 (set-val! "inputs" (nix-set '()))
+                                 (enter! "inputs")
+                                 (set-val! "nixpkgs" (nix-set '()))
+                                 (enter! "nixpkgs")
+                                 (set-val! "url" "github:nixos/nixpkgs/nixos-unstable")
+                                 (top!)
+                                 (enter! "inputs")
+                                 (set-val! "flake-utils" (nix-set '()))
+                                 (enter! "flake-utils")
+                                 (set-val! "url" "github:numtide/flake-utils")
+                                 (top!)
+                                 (set-val! "outputs" (nix-set '()))
+                                 (refresh-gui))))])
+
+(new menu-item% [parent m-templates] [label "Flake with NixOS Config"]
+     [callback (lambda (i e)
+                 (handle-error (lambda ()
+                                 (push-history!)
+                                 (reset-to-type! "set")
+                                 (set-val! "description" "NixOS configuration")
+                                 (set-val! "inputs" (nix-set '()))
+                                 (enter! "inputs")
+                                 (set-val! "nixpkgs" (nix-set '()))
+                                 (enter! "nixpkgs")
+                                 (set-val! "url" "github:nixos/nixpkgs/nixos-unstable")
+                                 (top!)
+                                 (set-val! "outputs" (nix-set '()))
+                                 (enter! "outputs")
+                                 (set-val! "nixosConfigurations" (nix-set '()))
+                                 (top!)
+                                 (refresh-gui))))])
+
+(new menu-item% [parent m-templates] [label "Overlay"]
+     [callback (lambda (i e)
+                 (handle-error (lambda ()
+                                 (push-history!)
+                                 (reset-to-type! "set")
+                                 ;; Overlay is typically: final: prev: { ... }
+                                 ;; We'll create a simple set structure
                                  (refresh-gui))))])
 
 ;; --- TOOLBAR ---
@@ -202,7 +303,7 @@
   (new choice%
        [parent search-bar]
        [label "Type:"]
-       [choices '("Packages" "Options")]
+       [choices '("Packages" "NixOS Options" "Home Manager Options")]
        [selection 0]
        [callback (lambda (c e)
                    ;; Update column headers based on search type
@@ -279,16 +380,18 @@
   (send search-panel show #f))
 
 (define (get-search-type)
-  (send search-type-choice get-selection))  ;; 0 = Packages, 1 = Options
+  (send search-type-choice get-selection))  ;; 0 = Packages, 1 = NixOS Options, 2 = Home Manager Options
 
 (define (update-search-columns)
   ;; Clear current results when switching types
   (set! search-results '())
   (send results-list-box clear)
+  (define search-type (get-search-type))
   (send search-status set-label
-        (if (= (get-search-type) 0)
-            "Enter a package name to search."
-            "Enter an option name to search (e.g., services.nginx).")))
+        (case search-type
+          [(0) "Enter a package name to search."]
+          [(1) "Enter a NixOS option name (e.g., services.nginx)."]
+          [(2) "Enter a Home Manager option (e.g., programs.git)."])))
 
 (define (start-search query)
   (when (non-empty-string? (string-trim query))
@@ -308,9 +411,10 @@
           (thread
            (lambda ()
              (define-values (results error)
-               (if (= search-type 0)
-                   (search-packages query)
-                   (search-options query)))
+               (case search-type
+                 [(0) (search-packages query)]
+                 [(1) (search-options query "nixos_options")]
+                 [(2) (search-options query "hm_options")]))
              (queue-callback
               (lambda ()
                 (if (= search-type 0)

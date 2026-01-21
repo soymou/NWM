@@ -152,27 +152,29 @@
 ;; Represents a NixOS option search result
 (struct option-result (name type default description) #:transparent)
 
-;; Search NixOS options using manix, nixos-option, or web API
+;; Search NixOS/Home Manager options using manix
+;; source can be "nixos_options" or "hm_options"
 ;; Returns (values results error-message)
-(define (search-options query)
+(define (search-options query [source "nixos_options"])
   (with-handlers ([exn:fail? (lambda (e)
                                (values '() (exn-message e)))])
     ;; Try manix first (if available)
-    (define-values (results1 err1) (manix-search query))
+    (define-values (results1 err1) (manix-search query source))
     (if (not (null? results1))
         (values results1 err1)
-        ;; Fall back to web API search
+        ;; Fall back to error message
         (nixos-options-web-search query))))
 
 ;; Search using manix (fast, comprehensive)
-(define (manix-search query)
+;; source: "nixos_options" or "hm_options" (not currently used, manix searches all)
+(define (manix-search query [source "nixos_options"])
   (define manix-path (find-executable-path "manix"))
   (cond
     [(not manix-path)
      (values '() #f)]  ;; manix not found, try fallback
     [else
      (define-values (proc stdout stdin stderr)
-       (subprocess #f #f #f manix-path query "--source" "nixos_options"))
+       (subprocess #f #f #f manix-path query))
 
      (close-output-port stdin)
 
