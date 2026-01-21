@@ -6,6 +6,7 @@
 (require "theme.rkt")
 (require "parser.rkt")
 (require "actions.rkt")
+(require "search.rkt")
 
 ;; Flag to prevent recursive refresh loops
 (define is-refreshing? (make-parameter #f))
@@ -102,8 +103,29 @@
 
 (define path-msg (new message% [parent toolbar-panel] [label "/"] [auto-resize #t] [stretchable-width #t]))
 
+(new panel% [parent toolbar-panel] [min-width 10] [stretchable-width #f])
+
+(define search-toggle-btn
+  (new button% [parent toolbar-panel] [label "Search"]
+       [callback (lambda (b e) (toggle-search-panel))]))
+
+;; =============================================================================
+;; SEARCH PANEL STATE
+;; =============================================================================
+
+(define search-panel-visible? #t)
+(define search-results '())  ;; List of package-result
+(define search-thread #f)
+
+;; =============================================================================
+;; LAYOUT STRUCTURE
+;; =============================================================================
+
+;; Outer container holds main-split and search-panel
+(define outer-container (new vertical-panel% [parent frame] [alignment '(center center)]))
+
 ;; --- MAIN SPLIT ---
-(define main-split (new horizontal-panel% [parent frame] [alignment '(center center)]))
+(define main-split (new horizontal-panel% [parent outer-container] [alignment '(center center)]))
 
 ;; --- LEFT: TREE VIEW ---
 (define left-panel (new vertical-panel% [parent main-split] [min-width 250] [stretchable-width #f] [spacing 0] [border 0]))
@@ -154,12 +176,426 @@
 
 (define bottom-right-group (new group-box-panel% [parent right-split] [label "Current Node Source (Read Only)"] [stretchable-height #f] [min-height 200]))
 (define source-view-text (new text%))
-(define source-view-canvas (new editor-canvas% 
-                                [parent bottom-right-group] 
+(define source-view-canvas (new editor-canvas%
+                                [parent bottom-right-group]
                                 [editor source-view-text]
                                 [style '(no-hscroll)]))
 (setup-dark-editor source-view-text source-view-canvas)
 (send source-view-text lock #t)
+
+;; =============================================================================
+;; SEARCH PANEL
+;; =============================================================================
+
+(define search-panel
+  (new group-box-panel%
+       [parent outer-container]
+       [label "Search"]
+       [stretchable-height #f]
+       [min-height 250]))
+
+;; Search bar: type selector + text field + buttons
+(define search-bar (new horizontal-panel% [parent search-panel] [stretchable-height #f] [alignment '(left center)]))
+
+;; Search type selector
+(define search-type-choice
+  (new choice%
+       [parent search-bar]
+       [label "Type:"]
+       [choices '("Packages" "Options")]
+       [selection 0]
+       [callback (lambda (c e)
+                   ;; Update column headers based on search type
+                   (update-search-columns))]))
+
+(define search-field
+  (new text-field%
+       [parent search-bar]
+       [label "Search:"]
+       [min-width 300]
+       [stretchable-width #t]
+       [callback (lambda (tf e)
+                   (when (eq? (send e get-event-type) 'text-field-enter)
+                     (start-search (send tf get-value))))]))
+
+(define search-btn
+  (new button%
+       [parent search-bar]
+       [label "Search"]
+       [callback (lambda (b e) (start-search (send search-field get-value)))]))
+
+(define close-search-btn
+  (new button%
+       [parent search-bar]
+       [label "Close"]
+       [callback (lambda (b e) (hide-search-panel))]))
+
+;; Status message
+(define search-status
+  (new message%
+       [parent search-panel]
+       [label "Enter a package name to search."]
+       [auto-resize #t]
+       [stretchable-width #t]))
+
+;; Results list-box with columns: Package | Version | Description
+(define results-list-box
+  (new list-box%
+       [parent search-panel]
+       [label #f]
+       [choices '()]
+       [columns '("Package" "Version" "Description")]
+       [column-order '(0 1 2)]
+       [style '(single column-headers variable-columns)]
+       [stretchable-height #t]
+       [callback (lambda (lb e)
+                   (when (eq? (send e get-event-type) 'list-box-dclick)
+                     (define idx (send lb get-selection))
+                     (when idx
+                       (define item (list-ref search-results idx))
+                       (if (= (get-search-type) 0)
+                           (show-insert-dialog item)      ;; Package
+                           (show-option-insert-dialog item)))))]))
+
+;; Set column widths: Package (200), Version (100), Description (rest)
+(send results-list-box set-column-width 0 200 50 500)
+(send results-list-box set-column-width 1 100 50 150)
+(send results-list-box set-column-width 2 400 100 1000)
+
+;; Search panel is visible by default
+
+;; =============================================================================
+;; SEARCH FUNCTIONS
+;; =============================================================================
+
+(define (toggle-search-panel)
+  (set! search-panel-visible? (not search-panel-visible?))
+  (send search-panel show search-panel-visible?)
+  (when search-panel-visible?
+    (send search-field focus)))
+
+(define (hide-search-panel)
+  (set! search-panel-visible? #f)
+  (send search-panel show #f))
+
+(define (get-search-type)
+  (send search-type-choice get-selection))  ;; 0 = Packages, 1 = Options
+
+(define (update-search-columns)
+  ;; Clear current results when switching types
+  (set! search-results '())
+  (send results-list-box clear)
+  (send search-status set-label
+        (if (= (get-search-type) 0)
+            "Enter a package name to search."
+            "Enter an option name to search (e.g., services.nginx).")))
+
+(define (start-search query)
+  (when (non-empty-string? (string-trim query))
+    ;; Kill existing search thread if any
+    (when (and search-thread (thread-running? search-thread))
+      (kill-thread search-thread))
+
+    ;; Clear results and show searching status
+    (set! search-results '())
+    (send results-list-box clear)
+    (send search-status set-label "Searching...")
+
+    (define search-type (get-search-type))
+
+    ;; Start search in background thread
+    (set! search-thread
+          (thread
+           (lambda ()
+             (define-values (results error)
+               (if (= search-type 0)
+                   (search-packages query)
+                   (search-options query)))
+             (queue-callback
+              (lambda ()
+                (if (= search-type 0)
+                    (display-package-results results error)
+                    (display-option-results results error)))))))))
+
+(define (display-package-results results error)
+  (set! search-results results)
+  (send results-list-box clear)
+
+  (cond
+    [error
+     (send search-status set-label (format "Error: ~a" error))]
+    [(null? results)
+     (send search-status set-label "No packages found.")]
+    [else
+     (send search-status set-label (format "Found ~a packages." (length results)))
+     (for ([pkg results])
+       (send results-list-box append
+             (format-package-name pkg)
+             pkg)
+       ;; Set column data
+       (define row (sub1 (send results-list-box get-number)))
+       (send results-list-box set-string row (package-result-version pkg) 1)
+       (send results-list-box set-string row
+             (let ([desc (package-result-description pkg)])
+               (if (> (string-length desc) 80)
+                   (string-append (substring desc 0 77) "...")
+                   desc))
+             2))]))
+
+(define (display-option-results results error)
+  (set! search-results results)
+  (send results-list-box clear)
+
+  (cond
+    [error
+     (send search-status set-label (format "Error: ~a" error))]
+    [(null? results)
+     (send search-status set-label "No options found.")]
+    [else
+     (send search-status set-label (format "Found ~a options." (length results)))
+     (for ([opt results])
+       (send results-list-box append
+             (option-result-name opt)
+             opt)
+       ;; Set column data: Name | Type | Description
+       (define row (sub1 (send results-list-box get-number)))
+       (send results-list-box set-string row (option-result-type opt) 1)
+       (send results-list-box set-string row
+             (let ([desc (option-result-description opt)])
+               (if (> (string-length desc) 80)
+                   (string-append (substring desc 0 77) "...")
+                   desc))
+             2))]))
+
+;; =============================================================================
+;; INSERT DIALOG
+;; =============================================================================
+
+(define (show-insert-dialog pkg)
+  (define dialog
+    (new dialog%
+         [parent frame]
+         [label "Insert Package"]
+         [width 400]
+         [height 300]))
+
+  ;; Package info
+  (new message%
+       [parent dialog]
+       [label (format "Package: ~a" (format-package-name pkg))])
+  (new message%
+       [parent dialog]
+       [label (format "Version: ~a" (package-result-version pkg))])
+  (when (non-empty-string? (package-result-description pkg))
+    (new message%
+         [parent dialog]
+         [label (format "~a" (substring (package-result-description pkg)
+                                        0
+                                        (min 100 (string-length (package-result-description pkg)))))]))
+
+  (new message% [parent dialog] [label ""])
+  (new message% [parent dialog] [label "Insert into:"])
+
+  ;; Custom path field (defined first so radio-box callback can reference it)
+  (define custom-path-field #f)
+
+  ;; Target selection
+  (define target-choice
+    (new radio-box%
+         [parent dialog]
+         [label #f]
+         [choices '("buildInputs (shell.nix)"
+                    "environment.systemPackages (NixOS)"
+                    "home.packages (home-manager)"
+                    "packages (flake devShell)"
+                    "Custom path...")]
+         [selection 0]
+         [callback (lambda (rb e)
+                     (when custom-path-field
+                       (send custom-path-field enable (= (send rb get-selection) 4))))]))
+
+  ;; Custom path field
+  (set! custom-path-field
+    (new text-field%
+         [parent dialog]
+         [label "Custom path:"]
+         [init-value ""]
+         [enabled #f]))
+
+  ;; Button panel
+  (define btn-panel (new horizontal-panel% [parent dialog] [alignment '(right center)]))
+
+  (define result #f)
+
+  (new button%
+       [parent btn-panel]
+       [label "Cancel"]
+       [callback (lambda (b e) (send dialog show #f))])
+
+  (new button%
+       [parent btn-panel]
+       [label "Insert"]
+       [style '(border)]
+       [callback (lambda (b e)
+                   (define sel (send target-choice get-selection))
+                   (define target-path
+                     (case sel
+                       [(0) '("buildInputs")]
+                       [(1) '("environment" "systemPackages")]
+                       [(2) '("home" "packages")]
+                       [(3) '("packages")]
+                       [(4) (string-split (send custom-path-field get-value) ".")]))
+                   (when (and (list? target-path) (not (null? target-path)))
+                     (perform-package-insert pkg target-path)
+                     (set! result #t)
+                     (send dialog show #f)))])
+
+  (send dialog show #t)
+  result)
+
+;; =============================================================================
+;; INSERT LOGIC
+;; =============================================================================
+
+(define (perform-package-insert pkg target-path)
+  (handle-error
+   (lambda ()
+     (push-history!)
+
+     ;; Save current path
+     (define orig-path (editor-state-path (current-session)))
+
+     ;; Navigate to root
+     (top!)
+
+     ;; Navigate/create path to target
+     (for ([seg target-path])
+       (define s (current-session))
+       (define root (editor-state-root s))
+       (define path (editor-state-path s))
+       (define node (get-node root path))
+
+       ;; Check if child exists
+       (define children (list-node-children node))
+       (unless (member seg children)
+         ;; Create the child as a list (since we're adding packages)
+         (if (equal? seg (last target-path))
+             (set-val! seg (nix-list '()))
+             (set-val! seg (nix-set '()))))
+       (enter! seg))
+
+     ;; Now we're at the target - push the package
+     (define pkg-name (format-package-name pkg))
+     (push! (nix-var pkg-name))
+
+     ;; Restore original path or stay at new location
+     (top!)
+
+     ;; Refresh GUI
+     ((refresh-callback)))))
+
+;; =============================================================================
+;; OPTION INSERT DIALOG
+;; =============================================================================
+
+(define (show-option-insert-dialog opt)
+  (define dialog
+    (new dialog%
+         [parent frame]
+         [label "Insert Option"]
+         [width 500]
+         [height 350]))
+
+  ;; Option info
+  (new message%
+       [parent dialog]
+       [label (format "Option: ~a" (option-result-name opt))])
+  (when (non-empty-string? (option-result-type opt))
+    (new message%
+         [parent dialog]
+         [label (format "Type: ~a" (option-result-type opt))]))
+  (when (non-empty-string? (option-result-description opt))
+    (new message%
+         [parent dialog]
+         [label (format "~a"
+                        (let ([desc (option-result-description opt)])
+                          (if (> (string-length desc) 100)
+                              (string-append (substring desc 0 97) "...")
+                              desc)))]))
+
+  (new message% [parent dialog] [label ""])
+
+  ;; Value input
+  (define value-field
+    (new text-field%
+         [parent dialog]
+         [label "Value:"]
+         [init-value (option-result-default opt)]
+         [min-width 300]))
+
+  (new message% [parent dialog] [label ""])
+  (new message% [parent dialog] [label "The option path will be created automatically."])
+
+  ;; Button panel
+  (define btn-panel (new horizontal-panel% [parent dialog] [alignment '(right center)]))
+
+  (define result #f)
+
+  (new button%
+       [parent btn-panel]
+       [label "Cancel"]
+       [callback (lambda (b e) (send dialog show #f))])
+
+  (new button%
+       [parent btn-panel]
+       [label "Insert"]
+       [style '(border)]
+       [callback (lambda (b e)
+                   (define value-str (send value-field get-value))
+                   (when (non-empty-string? value-str)
+                     (perform-option-insert opt value-str)
+                     (set! result #t)
+                     (send dialog show #f)))])
+
+  (send dialog show #t)
+  result)
+
+(define (perform-option-insert opt value-str)
+  (handle-error
+   (lambda ()
+     (push-history!)
+
+     ;; Parse option path like "services.nginx.enable" -> '("services" "nginx" "enable")
+     (define option-path (string-split (option-result-name opt) "."))
+
+     ;; Navigate to root
+     (top!)
+
+     ;; Navigate/create path to the option's parent
+     (define parent-path (drop-right option-path 1))
+     (define option-name (last option-path))
+
+     (for ([seg parent-path])
+       (define s (current-session))
+       (define root (editor-state-root s))
+       (define path (editor-state-path s))
+       (define node (get-node root path))
+
+       ;; Check if child exists
+       (define children (list-node-children node))
+       (unless (member seg children)
+         (set-val! seg (nix-set '())))
+       (enter! seg))
+
+     ;; Set the option value
+     (define parsed-value (parse-value value-str))
+     (set-val! option-name parsed-value)
+
+     ;; Return to root
+     (top!)
+
+     ;; Refresh GUI
+     ((refresh-callback)))))
 
 ;; =============================================================================
 ;; REFRESH LOGIC

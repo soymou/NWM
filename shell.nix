@@ -7,6 +7,7 @@ pkgs.mkShell {
     racket
     libedit
     ncurses
+    manix  # For NixOS options search
   ];
 
   shellHook = ''
