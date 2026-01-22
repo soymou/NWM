@@ -60,6 +60,11 @@
                       (load-file! (path->string f))
                       (mark-saved!)
                       (refresh-gui)))))])
+(new menu-item% [parent m-file] [label "Open Folder..."]
+     [callback (lambda (i e)
+                 (define dir (get-directory "Open Folder" frame))
+                 (when dir
+                   (change-browser-directory dir)))])
 (new separator-menu-item% [parent m-file])
 (new menu-item% [parent m-file] [label "Save"]
      [shortcut #\s]
