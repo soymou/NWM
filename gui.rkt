@@ -7,6 +7,7 @@
 (require "parser.rkt")
 (require "actions.rkt")
 (require "search.rkt")
+(require "file-browser.rkt")
 (require framework)
 
 ;; Flag to prevent recursive refresh loops
@@ -267,6 +268,18 @@
 
 ;; --- MAIN SPLIT ---
 (define main-split (new panel:horizontal-dragable% [parent outer-container]))
+
+;; --- FILE BROWSER ---
+(define file-browser-panel
+  (create-file-browser
+   main-split
+   frame
+   (lambda (path)
+     (handle-error
+      (lambda ()
+        (load-file! (path->string path))
+        (mark-saved!)
+        (refresh-gui))))))
 
 ;; --- LEFT: TREE VIEW ---
 (define left-panel (new vertical-panel% [parent main-split] [min-width 200] [stretchable-width #t] [spacing 0] [border 0]))
