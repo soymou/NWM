@@ -719,25 +719,59 @@
      ;; Navigate to root
      (top!)
 
-     ;; Navigate/create path to target
-     (for ([seg target-path])
-       (define s (current-session))
-       (define root (editor-state-root s))
-       (define path (editor-state-path s))
-       (define node (get-node root path))
+     ;; If root is a Lambda, enter "body" automatically
+     (let ([root (editor-state-root (current-session))])
+       (when (nix-lambda? root)
+         (enter! "body")))
 
-       ;; Check if child exists
-       (define children (list-node-children node))
-       (unless (member seg children)
-         ;; Create the child as a list (since we're adding packages)
-         (if (equal? seg (last target-path))
-             (set-val! seg (nix-list '()))
-             (set-val! seg (nix-set '()))))
-       (enter! seg))
+     ;; Navigate/create path to target with support for dotted paths
+     (let loop ([remaining target-path])
+       (unless (null? remaining)
+         (define s (current-session))
+         (define root (editor-state-root s))
+         (define path (editor-state-path s))
+         (define node (get-node root path))
+         (define children (list-node-children node))
+         
+         (define seg (first remaining))
+         
+         (cond
+           ;; Case 1: Exact match
+           [(member seg children)
+            (enter! seg)
+            (loop (rest remaining))]
+            
+           ;; Case 2: Dotted path match (e.g. "environment.systemPackages")
+           [(findf (lambda (c) 
+                     (and (string-prefix? c (string-append seg "."))
+                          (let ([parts (string-split c ".")])
+                            (and (>= (length remaining) (length parts))
+                                 (equal? (take remaining (length parts)) parts)))))
+                   children)
+            => (lambda (match-str)
+                 (enter! match-str)
+                 (loop (drop remaining (length (string-split match-str ".")))))]
+                 
+           ;; Case 3: Create new
+           [else
+            (if (null? (rest remaining))
+                (set-val! seg (nix-list '()))
+                (set-val! seg (nix-set '())))
+            (enter! seg)
+            (loop (rest remaining))])))
 
      ;; Now we're at the target - push the package
+     (define s-final (current-session))
+     (define target-node (get-node (editor-state-root s-final) (editor-state-path s-final)))
+     
      (define pkg-name (format-package-name pkg))
-     (push! (nix-var pkg-name))
+     ;; If it's a list but NOT a 'with pkgs; [ ... ]' block, we should use pkgs. prefix
+     (define final-pkg-var
+       (if (nix-list? target-node)
+           (nix-var (string-append "pkgs." pkg-name))
+           (nix-var pkg-name)))
+           
+     (push! final-pkg-var)
 
      ;; Restore original path or stay at new location
      (top!)
@@ -822,21 +856,47 @@
      ;; Navigate to root
      (top!)
 
+     ;; If root is a Lambda, enter "body" automatically
+     (let ([root (editor-state-root (current-session))])
+       (when (nix-lambda? root)
+         (enter! "body")))
+
      ;; Navigate/create path to the option's parent
      (define parent-path (drop-right option-path 1))
      (define option-name (last option-path))
 
-     (for ([seg parent-path])
-       (define s (current-session))
-       (define root (editor-state-root s))
-       (define path (editor-state-path s))
-       (define node (get-node root path))
-
-       ;; Check if child exists
-       (define children (list-node-children node))
-       (unless (member seg children)
-         (set-val! seg (nix-set '())))
-       (enter! seg))
+     (let loop ([remaining parent-path])
+       (unless (null? remaining)
+         (define s (current-session))
+         (define root (editor-state-root s))
+         (define path (editor-state-path s))
+         (define node (get-node root path))
+         (define children (list-node-children node))
+         
+         (define seg (first remaining))
+         
+         (cond
+           ;; Case 1: Exact match
+           [(member seg children)
+            (enter! seg)
+            (loop (rest remaining))]
+            
+           ;; Case 2: Dotted path match
+           [(findf (lambda (c) 
+                     (and (string-prefix? c (string-append seg "."))
+                          (let ([parts (string-split c ".")])
+                            (and (>= (length remaining) (length parts))
+                                 (equal? (take remaining (length parts)) parts)))))
+                   children)
+            => (lambda (match-str)
+                 (enter! match-str)
+                 (loop (drop remaining (length (string-split match-str ".")))))]
+                 
+           ;; Case 3: Create new (always a set for option parents)
+           [else
+            (set-val! seg (nix-set '()))
+            (enter! seg)
+            (loop (rest remaining))])))
 
      ;; Set the option value
      (define parsed-value (parse-value value-str))

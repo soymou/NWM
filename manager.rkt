@@ -450,6 +450,11 @@
                                      (match n
                                        [(struct nix-list (elems))
                                         (nix-list (append elems (list val)))]
+                                       [(struct nix-with (env body))
+                                        (match body
+                                          [(struct nix-list (elems))
+                                           (nix-with env (nix-list (append elems (list val))))]
+                                          [else (error "Body of with-expression is not a List")])]
                                        [else (error "Focus is not a List")])))]))))
 
 (define (annotate! text)
