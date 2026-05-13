@@ -2,6 +2,9 @@
 
 The **Nix Workspace Manager** is a GUI tool built in Racket designed to interactively create, manage, and generate Nix configuration files. It provides a modern, user-friendly interface to manage Nix expressions, simplifying the process for both beginners and experts.
 
+![i-built-a-cli-tool-to-edit-nix-configurations-like-a-v0-44vav6hw8reg1](https://github.com/user-attachments/assets/b861eb1c-6713-48e4-8f60-e0d857e48926)
+
+
 ## Project Goals
 
 1.  **GUI-Driven Management**: Manage Nix configuration files (`default.nix`, `flake.nix`, etc.) primarily through a Graphical User Interface.
